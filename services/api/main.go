@@ -903,6 +903,30 @@ func mapfreStockDateMappings() []model.FieldMap {
 	}
 }
 
+// bolivarBancoMappings columnas del layout Deudores Banco (Anexo 4 / MICRO_BANCO_*).
+// La columna "%" (sin espacio) es la tasa de prima; "% " es otra tasa (valor servicio).
+func bolivarBancoMappings() []model.FieldMap {
+	return append([]model.FieldMap{
+		{CanonicalField: "document_number", SourceHeader: "IDENTIFICACION", Required: true},
+		{CanonicalField: "birth_date", SourceHeader: "FECHA DE NACIMIENTO", Required: true},
+		{CanonicalField: "credit_number", SourceHeader: "OP BT", Required: true},
+		{CanonicalField: "initial_debt_amount", SourceHeader: "DEUDA INICIAL", Required: true},
+		{CanonicalField: "monthly_premium", SourceHeader: "PRIMA MENSUAL", Required: true},
+		{CanonicalField: "rate_percent", SourceHeader: "%", Required: true},
+		{CanonicalField: "activation_date", SourceHeader: "FECHA ADJUDICACION", Required: true},
+		{CanonicalField: "loan_award_date", SourceHeader: "FECHA ADJUDICACION", Required: true},
+		{CanonicalField: "loan_due_date_current", SourceHeader: "FECHA VENCIMIENTO ACTUAL", Required: true},
+		{CanonicalField: "calculated_term", SourceHeader: "PLAZO CRÉDITO", Required: false},
+		{CanonicalField: "plan_code", SourceHeader: "CODIGO SEGURO", Required: false},
+		{CanonicalField: "office", SourceHeader: "OFICINA", Required: false},
+		{CanonicalField: "email", SourceHeader: "E-mail", Required: false},
+		{CanonicalField: "phone", SourceHeader: "Telefono", Required: false},
+		{CanonicalField: "observacion", SourceHeader: "OBSERVACIONES ABRIL 2026", Required: false},
+	}, []model.FieldMap{
+		{CanonicalField: "gender", SourceHeader: "GENERO", Required: false},
+	}...)
+}
+
 func optionalPersonMappings() []model.FieldMap {
 	return []model.FieldMap{
 		// Datos de persona: se mapean en seed pero se dejan opcionales por ahora.
@@ -1329,6 +1353,9 @@ func seed(st *store.Store) {
 	})
 	_ = st.UpsertProductRuleParam("bolivar_stock", "debt_manual_threshold", "20000000")
 	_ = st.UpsertProductRuleParam("bolivar_stock", "bolivar_prima_calc_tolerance", "1")
+	_ = st.UpsertProductRuleParam("bolivar_stock", "bolivar_plazo_dias_tolerance", "31")
+	_ = st.UpsertProductRuleParam("bolivar_stock", "bolivar_due_reference_month_offset", "-1")
+	_ = st.UpsertProductRuleParam("bolivar_stock", "bolivar_validate_due_month", "1")
 	_ = st.UpsertProductRuleParam("bolivar_stock", "age_min", "18")
 	_ = st.UpsertProductRuleParam("bolivar_stock", "age_max", "75.997")
 	_ = st.UpsertProductRuleParam("bolivar_stock", "age_max_days_before_birthday", "1")
@@ -1396,5 +1423,60 @@ func seed(st *store.Store) {
 	st.UpsertProduct(model.Product{ID: "mapfre_acc_men", Code: "MAPFRE_ACC_MEN", Insurer: "MAPFRE"})
 	st.UpsertProduct(model.Product{ID: "mapfre_cancer", Code: "MAPFRE_CANCER", Insurer: "MAPFRE"})
 	st.UpsertProduct(model.Product{ID: "mapfre_stock", Code: "MAPFRE_STOCK", Insurer: "MAPFRE"})
+	st.UpsertProduct(model.Product{
+		ID:         "bolivar_banco",
+		Code:       "BOLIVAR_BANCO",
+		Insurer:    "BOLIVAR",
+		FilePrefix: "MICRO_BANCO",
+		HeaderRow:  1,
+		Mappings:   bolivarBancoMappings(),
+		Rules: []model.RuleConfig{
+			{Type: "required_not_empty", Field: "credit_number"},
+			{Type: "number_gte", Field: "initial_debt_amount", Params: map[string]float64{"min": 0}},
+			{Type: "number_gte", Field: "monthly_premium", Params: map[string]float64{"min": 0}},
+		},
+	})
+	_ = st.UpsertProductRuleParam("bolivar_banco", "debt_manual_threshold", "20000000")
+	_ = st.UpsertProductRuleParam("bolivar_banco", "bolivar_prima_calc_tolerance", "1")
+	_ = st.UpsertProductRuleParam("bolivar_banco", "bolivar_plazo_dias_tolerance", "31")
+	_ = st.UpsertProductRuleParam("bolivar_banco", "bolivar_due_reference_month_offset", "-1")
+	_ = st.UpsertProductRuleParam("bolivar_banco", "bolivar_validate_due_month", "1")
+	_ = st.UpsertProductRuleParam("bolivar_banco", "age_min", "18")
+	_ = st.UpsertProductRuleParam("bolivar_banco", "age_max", "75.997")
+	_ = st.UpsertProductRuleParam("bolivar_banco", "age_max_days_before_birthday", "1")
+	_ = st.UpsertProductRuleParam("bolivar_banco", "required_valid_date_fields_csv", "birth_date,activation_date,loan_award_date,loan_due_date_current")
+	st.UpsertProductFormat(model.ProductFormat{
+		ID:         "bolivar_banco_fmt_micro_abril",
+		ProductID:  "bolivar_banco",
+		Name:       "micro banco abril VF",
+		FilePrefix: "MICRO_BANCO",
+		HeaderRow:  1,
+		Priority:   200,
+		Active:     true,
+		Mappings:   bolivarBancoMappings(),
+		Rules: []model.RuleConfig{
+			{Type: "required_not_empty", Field: "credit_number"},
+			{Type: "number_gte", Field: "initial_debt_amount", Params: map[string]float64{"min": 0}},
+			{Type: "number_gte", Field: "monthly_premium", Params: map[string]float64{"min": 0}},
+		},
+	})
+	// También archivos 1000004553301_MICRO_BANCO_MES_V1.xlsx del diagrama
+	st.UpsertProductFormat(model.ProductFormat{
+		ID:         "bolivar_banco_fmt_1000004553301",
+		ProductID:  "bolivar_banco",
+		Name:       "micro banco mes v1",
+		FilePrefix: "1000004553301_MICRO_BANCO",
+		HeaderRow:  1,
+		Priority:   190,
+		Active:     true,
+		Mappings:   bolivarBancoMappings(),
+		Rules: []model.RuleConfig{
+			{Type: "required_not_empty", Field: "credit_number"},
+			{Type: "number_gte", Field: "initial_debt_amount", Params: map[string]float64{"min": 0}},
+			{Type: "number_gte", Field: "monthly_premium", Params: map[string]float64{"min": 0}},
+		},
+	})
+
 	st.UpsertProduct(model.Product{ID: "bolivar_stock", Code: "BOLIVAR_STOCK", Insurer: "BOLIVAR"})
+	st.UpsertProduct(model.Product{ID: "bolivar_banco", Code: "BOLIVAR_BANCO", Insurer: "BOLIVAR"})
 }

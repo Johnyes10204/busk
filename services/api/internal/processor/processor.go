@@ -66,6 +66,9 @@ type ruleRuntimeConfig struct {
 	HasAgeLimits               bool
 	BolivarDebtManualThreshold  float64
 	BolivarPrimaCalcTolerance   float64
+	BolivarPlazoDiasTolerance        int
+	BolivarDueReferenceMonthOffset   int  // mes mínimo vs calendario: -1 = mes vencido (en mayo se carga abril)
+	BolivarValidateDueMonth          bool // E.10: vencimiento < mes facturación → revisar prima; prima 0 → cancelación sin incidencia por fecha
 	MapfreRequireCurrentMonth    bool
 	MapfreDateToleranceDays      int // tolerancia vigencias (plazo); no confundir con edad
 	AgeMaxDaysBeforeBirthday     int // días antes del cumpleaños tope (75.997 → 1 = hasta el día anterior al 76)
@@ -533,7 +536,7 @@ func validateFile(r io.Reader, fileID, fileName string, candidates []model.Produ
 
 	fieldToCol := make(map[string]int)
 	for _, m := range p.Mappings {
-		col, ok := headerIdx[strings.ToUpper(strings.TrimSpace(m.SourceHeader))]
+		col, ok := columnIndexForFieldMap(header, m)
 		if !ok {
 			if m.Required {
 				return nil, fileHash, archivePath, p.ID, fmt.Errorf("falta columna requerida: %s", m.SourceHeader)
@@ -601,6 +604,12 @@ func validateFile(r io.Reader, fileID, fileName string, candidates []model.Produ
 		values := make(map[string]string)
 		// Incluye toda la fila por encabezado original para exponer el recurso completo
 		// (ej. nombres, apellidos, oficina y demás columnas no canónicas).
+		excelColOrder := make([]string, 0, len(header))
+		for _, h := range header {
+			if h = strings.TrimSpace(h); h != "" {
+				excelColOrder = append(excelColOrder, h)
+			}
+		}
 		for col, h := range header {
 			if col >= len(row) {
 				continue
@@ -621,6 +630,12 @@ func validateFile(r io.Reader, fileID, fileName string, candidates []model.Produ
 		for field, col := range fieldToCol {
 			if col < len(row) {
 				values[field] = strings.TrimSpace(row[col])
+			}
+		}
+		attachFieldHeaders(values, p.Mappings)
+		if len(excelColOrder) > 0 {
+			if b, err := json.Marshal(excelColOrder); err == nil {
+				values["_excel_column_order"] = string(b)
 			}
 		}
 		values["_file_name"] = fileName
@@ -646,7 +661,7 @@ func validateFile(r io.Reader, fileID, fileName string, candidates []model.Produ
 			if prem, _ := parseFlexibleNumber(values["monthly_premium"]); prem == 0 {
 				cancelledZeroPremiumCount++
 				status = "CANCELLED"
-				notes = append(notes, mensajePrimaCeroSinCongelamiento())
+				// Cancelación no es incidencia: no se guarda en validation_json ni en el informe Excel/CSV.
 			}
 		}
 		// Reglas duras y de negocio del diagrama por producto (se acumulan todos los fallos de la fila).
@@ -660,7 +675,9 @@ func validateFile(r io.Reader, fileID, fileName string, candidates []model.Produ
 			ruleCfg,
 			svc,
 		)
-		notes = append(notes, rowNotes...)
+		for _, msg := range rowNotes {
+			notes = append(notes, noteInformativo(msg))
+		}
 		for _, msg := range diagramHards {
 			notes = append(notes, noteIncidencia(msg))
 		}
@@ -868,6 +885,9 @@ func (s *Service) buildRuleRuntimeConfig(p model.Product) ruleRuntimeConfig {
 		AllowedPremiums:            s.store.GetAllowedPremiums(p.ID),
 		BolivarDebtManualThreshold: 20000000,
 		BolivarPrimaCalcTolerance:  1.0,
+		BolivarPlazoDiasTolerance:        0,
+		BolivarDueReferenceMonthOffset:   -1,
+		BolivarValidateDueMonth:          true,
 		MapfreRequireCurrentMonth:  true,
 		MapfreDateToleranceDays:    2,
 	}
@@ -904,6 +924,19 @@ func (s *Service) buildRuleRuntimeConfig(p model.Product) ruleRuntimeConfig {
 		if n, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil && n >= 0 {
 			cfg.BolivarPrimaCalcTolerance = n
 		}
+	}
+	if v, ok := s.store.GetProductRuleParam(p.ID, "bolivar_plazo_dias_tolerance"); ok {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n >= 0 {
+			cfg.BolivarPlazoDiasTolerance = n
+		}
+	}
+	if v, ok := s.store.GetProductRuleParam(p.ID, "bolivar_due_reference_month_offset"); ok {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			cfg.BolivarDueReferenceMonthOffset = n
+		}
+	}
+	if v, ok := s.store.GetProductRuleParam(p.ID, "bolivar_validate_due_month"); ok {
+		cfg.BolivarValidateDueMonth = strings.TrimSpace(v) == "1"
 	}
 	if v, ok := s.store.GetProductRuleParam(p.ID, "mapfre_require_current_month"); ok {
 		cfg.MapfreRequireCurrentMonth = strings.TrimSpace(v) != "0"
@@ -1115,13 +1148,21 @@ func applyDiagramRules(
 		case strings.TrimSpace(det.birthRaw) == "":
 			hardViolations = append(hardViolations, mensajeFechaNacimientoObligatoriaParaEdad())
 		case det.activacionRaw == "":
-			hardViolations = append(hardViolations, mensajeFechaActivacionObligatoriaParaEdad())
+			if strings.HasPrefix(code, "BOLIVAR") {
+				hardViolations = append(hardViolations, mensajeFechaActivacionObligatoriaBolivar())
+			} else {
+				hardViolations = append(hardViolations, mensajeFechaActivacionObligatoriaParaEdad())
+			}
 		case !det.refValid:
-			hardViolations = append(hardViolations, mensajeFechaActivacionNoCalculable(det.activacionRaw, cfg.DateLayouts, mapfreSheet))
+			hardViolations = append(hardViolations, mensajeFechaActivacionNoCalculable(det.activacionRaw, cfg.DateLayouts, mapfreSheet, code))
 		case !fechaNacimientoParseable(det.birthRaw, cfg.DateLayouts, mapfreSheet):
 			hardViolations = append(hardViolations, mensajeEdadNoCalculable(det.birthRaw))
 		case !det.cumple:
-			hardViolations = append(hardViolations, mensajeEdadFueraDeRango(code, det, cfg.AgeMin, cfg.AgeMax, ageDaysBeforeTopBirthday(cfg.AgeMaxDaysBeforeBirthday)))
+			if strings.HasPrefix(code, "BOLIVAR") && !bolivarAplicaIncidenciaEdadFueraRango(values, cfg) {
+				// E.8: deuda ≤ umbral → no incidencia por edad; la póliza puede importarse.
+			} else {
+				hardViolations = append(hardViolations, mensajeEdadFueraDeRango(code, det, cfg.AgeMin, cfg.AgeMax, ageDaysBeforeTopBirthday(cfg.AgeMaxDaysBeforeBirthday)))
+			}
 		}
 	}
 
@@ -1146,36 +1187,9 @@ func applyDiagramRules(
 	}
 
 	if strings.HasPrefix(code, "BOLIVAR") {
-		if due := parseDateWithLayouts(values["loan_due_date_current"], cfg.DateLayouts); !due.IsZero() {
-			now := time.Now().UTC()
-			if due.Year() < now.Year() || (due.Year() == now.Year() && due.Month() < now.Month()) {
-				hardViolations = append(hardViolations, mensajeVencimientoMesPasado())
-			}
-		}
-		adj := parseDateWithLayouts(values["loan_award_date"], cfg.DateLayouts)
-		due := parseDateWithLayouts(values["loan_due_date_current"], cfg.DateLayouts)
-		if !adj.IsZero() && !due.IsZero() && due.Before(adj) {
-			hardViolations = append(hardViolations, mensajeVencimientoMenorAdjudicacion())
-		}
-		// Prima calculada: DEUDA_INICIAL × (tasa% / 100) debe coincidir con PRIMA MENSUAL.
-		// Si difieren y existe una observación, se reporta como nota; sin observación es incidencia.
-		deuda, errD := parseFlexibleNumber(values["initial_debt_amount"])
-		tasa, errT := parseFlexibleNumber(values["rate_percent"])
-		prima, errP := parseFlexibleNumber(values["monthly_premium"])
-		if errD == nil && errT == nil && errP == nil && deuda > 0 && tasa > 0 {
-			primaCalc := deuda * (tasa / 100)
-			if math.Abs(primaCalc-prima) > cfg.BolivarPrimaCalcTolerance {
-				obs := strings.TrimSpace(values["observacion"])
-				if obs == "" {
-					hardViolations = append(hardViolations, mensajePrimaCalculadaDifiere(prima, primaCalc, deuda, tasa))
-				} else {
-					softNotes = append(softNotes, mensajePrimaCalculadaDifiereJustificada(prima, primaCalc, obs))
-				}
-			}
-		}
-		if debt, err := parseFlexibleNumber(values["initial_debt_amount"]); err == nil && debt > cfg.BolivarDebtManualThreshold {
-			softNotes = append(softNotes, mensajeDeudaAltaRevisionManual(cfg.BolivarDebtManualThreshold))
-		}
+		bh, bs := applyBolivarDiagramRules(values, cfg)
+		hardViolations = append(hardViolations, bh...)
+		softNotes = append(softNotes, bs...)
 		return hardViolations, softNotes
 	}
 
@@ -1389,16 +1403,25 @@ func parseExcelSerialDateString(s string) (time.Time, bool) {
 	return t, true
 }
 
-// activationDateRaw: fecha de activación para edad de ingreso (diagrama: edad al momento de activar).
+// activationDateRaw: fecha de activación para edad de ingreso (diagrama Bolívar: FECHA ADJUDICACION del crédito).
 func activationDateRaw(values map[string]string, productCode string) string {
-	if v := strings.TrimSpace(values["activation_date"]); v != "" {
-		return v
+	for _, key := range []string{"activation_date", "loan_award_date", "coverage_start_date"} {
+		if v := strings.TrimSpace(values[key]); v != "" {
+			return v
+		}
 	}
 	code := strings.ToUpper(strings.TrimSpace(productCode))
 	if strings.HasPrefix(code, "BOLIVAR") {
-		return strings.TrimSpace(values["loan_award_date"])
+		for key, val := range values {
+			upper := strings.ToUpper(strings.TrimSpace(key))
+			if strings.Contains(upper, "ADJUDIC") || strings.Contains(upper, "ACTIVAC") {
+				if v := strings.TrimSpace(val); v != "" {
+					return v
+				}
+			}
+		}
 	}
-	return strings.TrimSpace(values["coverage_start_date"])
+	return ""
 }
 
 // ageReferenceAtActivation devuelve la fecha de activación parseada (edad = nacimiento → activación).
@@ -1407,7 +1430,7 @@ func ageReferenceAtActivation(values map[string]string, layouts []string, mapfre
 	if raw == "" {
 		return time.Time{}, false
 	}
-	t := parseAgeReferenceDate(raw, layouts, mapfreSheet)
+	t := parseAgeReferenceDate(raw, layouts, mapfreSheet, productCode)
 	return t, !t.IsZero()
 }
 
@@ -1675,6 +1698,8 @@ func codeToProductID(code string) string {
 		return "mapfre_cancer"
 	case "BOLIVAR_STOCK":
 		return "bolivar_stock"
+	case "BOLIVAR_BANCO":
+		return "bolivar_banco"
 	default:
 		return strings.ToLower(code)
 	}

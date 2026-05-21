@@ -127,8 +127,12 @@ func parseBirthDateOrders(raw string, layouts []string, mapfreSheet bool) (dmy, 
 }
 
 // parseAgeReferenceDate parsea la fecha de activación (edad de ingreso = edad en ese día).
-func parseAgeReferenceDate(raw string, layouts []string, mapfreSheet bool) time.Time {
+func parseAgeReferenceDate(raw string, layouts []string, mapfreSheet bool, productCode string) time.Time {
 	if mapfreSheet {
+		return parseDateFieldMDYFirst(raw, layouts, dateYearContextVigencia)
+	}
+	// Bolívar inclusiones: adjudicación en mes/día/año (como MICRO_BANCO); serial Excel soportado.
+	if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(productCode)), "BOLIVAR") {
 		return parseDateFieldMDYFirst(raw, layouts, dateYearContextVigencia)
 	}
 	return parseDateField(raw, layouts, dateYearContextVigencia)

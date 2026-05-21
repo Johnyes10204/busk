@@ -14,6 +14,7 @@ import (
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/buskseguros-design/services/api/internal/model"
+	"github.com/buskseguros-design/services/api/internal/validationnotes"
 	"github.com/go-sql-driver/mysql"
 	"github.com/xuri/excelize/v2"
 )
@@ -61,8 +62,12 @@ type FileValidationReport struct {
 	DuplicateCredits        []FileDuplicateCredit   `json:"duplicate_credits"`
 	TotalDuplicateCredits   int                     `json:"total_duplicate_credits"`
 	TotalDuplicateRows      int                     `json:"total_duplicate_rows"`
-	PendingValidations      []FilePendingValidation `json:"pending_validations"`
-	TotalPendingValidations int                     `json:"total_pending_validations"`
+	PendingValidations           []FilePendingValidation `json:"pending_validations"`
+	TotalPendingValidations      int                     `json:"total_pending_validations"`
+	InformativeValidations       []FilePendingValidation `json:"informative_validations,omitempty"`
+	TotalInformativeValidations  int                     `json:"total_informative_validations"`
+	SourceColumns                []string                `json:"source_columns,omitempty"`
+	ExportedRows                 []FileExportedRow       `json:"exported_rows,omitempty"`
 }
 
 func NewMySQLFromEnv() (*Store, error) {
@@ -779,6 +784,7 @@ type policyRowInput struct {
 	CreditNumber   string
 	PolicyStatus   string
 	ValidationJSON string
+	RawDataJSON    string
 }
 
 func completeFileValidationReport(
@@ -796,6 +802,7 @@ func completeFileValidationReport(
 	creditCounts := make(map[string]int)
 	creditRows := make(map[string][]int)
 	pending := make([]FilePendingValidation, 0)
+	informative := make([]FilePendingValidation, 0)
 
 	for _, in := range inputs {
 		out.PolicyRowCount++
@@ -810,13 +817,30 @@ func completeFileValidationReport(
 			_ = json.Unmarshal([]byte(in.ValidationJSON), &notes)
 		}
 		st := strings.TrimSpace(in.PolicyStatus)
-		if len(notes) > 0 || strings.EqualFold(st, "MANUAL_REVIEW") {
+		if strings.EqualFold(st, "CANCELLED") {
+			continue
+		}
+		blocking, info := validationnotes.Split(notes)
+		if len(info) > 0 {
+			informative = append(informative, FilePendingValidation{
+				RowNumber:      in.RowNumber,
+				DocumentNumber: doc,
+				CreditNumber:   cred,
+				PolicyStatus:   st,
+				Notes:          info,
+			})
+		}
+		if len(blocking) > 0 || strings.EqualFold(st, "MANUAL_REVIEW") {
+			rowNotes := blocking
+			if len(rowNotes) == 0 && strings.EqualFold(st, "MANUAL_REVIEW") {
+				rowNotes = nil
+			}
 			pending = append(pending, FilePendingValidation{
 				RowNumber:      in.RowNumber,
 				DocumentNumber: doc,
 				CreditNumber:   cred,
 				PolicyStatus:   st,
-				Notes:          notes,
+				Notes:          rowNotes,
 			})
 		}
 	}
@@ -851,6 +875,9 @@ func completeFileValidationReport(
 	out.TotalDuplicateRows = totalDuplicateRows
 	out.PendingValidations = pending
 	out.TotalPendingValidations = len(pending)
+	out.InformativeValidations = informative
+	out.TotalInformativeValidations = len(informative)
+	out.SourceColumns, out.ExportedRows = buildFileExportedRows(inputs)
 	return out
 }
 
@@ -996,6 +1023,64 @@ func validationReportClientRows(r FileValidationReport) [][]string {
 	return out
 }
 
+// validationReportInformativeRows: misma estructura que incidencias, para la hoja «Informes» del Excel (no bloquean carga).
+func validationReportInformativeRows(r FileValidationReport) [][]string {
+	header := []string{
+		"tipo_registro",
+		"nombre_archivo",
+		"file_id",
+		"producto_id",
+		"fila_excel",
+		"identificacion_afiliado",
+		"numero_credito",
+		"estado_poliza",
+		"cantidad_avisos",
+		"avisos_json",
+		"detalle_aviso",
+	}
+	out := [][]string{header}
+	fileName := strings.TrimSpace(r.FileName)
+	fileID := strings.TrimSpace(r.FileID)
+	productID := strings.TrimSpace(r.ProductID)
+
+	byRow := make(map[int]FilePendingValidation)
+	for _, pv := range r.InformativeValidations {
+		ex, ok := byRow[pv.RowNumber]
+		if !ok {
+			byRow[pv.RowNumber] = pv
+			continue
+		}
+		ex.Notes = append(append([]string{}, ex.Notes...), pv.Notes...)
+		byRow[pv.RowNumber] = ex
+	}
+	rowNums := make([]int, 0, len(byRow))
+	for rn := range byRow {
+		rowNums = append(rowNums, rn)
+	}
+	sort.Ints(rowNums)
+
+	for _, rn := range rowNums {
+		pv := byRow[rn]
+		notes := trimNotesPreserveAll(pv.Notes)
+		detail := formatNovedadesColumn(notes)
+		jsonNotes, _ := json.Marshal(notes)
+		out = append(out, []string{
+			"Informe informativo",
+			fileName,
+			fileID,
+			productID,
+			strconv.Itoa(pv.RowNumber),
+			strings.TrimSpace(pv.DocumentNumber),
+			strings.TrimSpace(pv.CreditNumber),
+			etiquetaEstadoPolizaInforme(pv.PolicyStatus),
+			strconv.Itoa(len(notes)),
+			string(jsonNotes),
+			detail,
+		})
+	}
+	return out
+}
+
 func trimNotesPreserveAll(notes []string) []string {
 	out := make([]string, 0, len(notes))
 	for _, n := range notes {
@@ -1081,20 +1166,51 @@ func ValidationReportClientCSV(r FileValidationReport) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// ValidationReportClientXLSX genera un libro Excel (.xlsx) con la misma tabla que el CSV de novedades.
+// ValidationReportClientXLSX genera un libro Excel (.xlsx):
+// hoja «Incidencias» = bloquean o revisión manual (mismo contenido que el CSV);
+// hoja «Informes» = avisos informativos (p. ej. vencimiento anterior al mes de facturación) sin frenar la carga.
 func ValidationReportClientXLSX(r FileValidationReport) ([]byte, error) {
-	rows := validationReportClientRows(r)
 	f := excelize.NewFile()
 	defer func() { _ = f.Close() }()
-	const sheet = "Sheet1"
+	const sheetIncidencias = "Incidencias"
+	const sheetInformes = "Informes"
+	if err := f.SetSheetName("Sheet1", sheetIncidencias); err != nil {
+		return nil, err
+	}
+	if _, err := f.NewSheet(sheetInformes); err != nil {
+		return nil, err
+	}
+	if err := writeValidationReportSheet(f, sheetIncidencias, validationReportClientRows(r)); err != nil {
+		return nil, err
+	}
+	if err := writeValidationReportSheet(f, sheetInformes, validationReportInformativeRows(r)); err != nil {
+		return nil, err
+	}
+	const sheetDatos = "Datos archivo"
+	if _, err := f.NewSheet(sheetDatos); err != nil {
+		return nil, err
+	}
+	if err := writeValidationReportMirrorSheet(f, sheetDatos, validationReportMirrorRows(r)); err != nil {
+		return nil, err
+	}
+	idxInc, _ := f.GetSheetIndex(sheetIncidencias)
+	f.SetActiveSheet(idxInc)
+	buf, err := f.WriteToBuffer()
+	if err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func writeValidationReportSheet(f *excelize.File, sheet string, rows [][]string) error {
 	for ri, row := range rows {
 		for ci, val := range row {
 			cell, err := excelize.CoordinatesToCellName(ci+1, ri+1)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			if err := f.SetCellValue(sheet, cell, val); err != nil {
-				return nil, err
+				return err
 			}
 		}
 	}
@@ -1117,11 +1233,7 @@ func ValidationReportClientXLSX(r FileValidationReport) ([]byte, error) {
 			_ = f.SetCellStyle(sheet, "K2", "K"+lastStr, wrapID)
 		}
 	}
-	buf, err := f.WriteToBuffer()
-	if err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
+	return nil
 }
 
 func formatIntListForCSV(nums []int) string {
@@ -1151,6 +1263,7 @@ func BuildFileValidationReportFromPolicies(
 			CreditNumber:   p.CreditNumber,
 			PolicyStatus:   p.PolicyStatus,
 			ValidationJSON: p.ValidationJSON,
+			RawDataJSON:    p.RawDataJSON,
 		})
 	}
 	return completeFileValidationReport(fileID, fileName, productID, fileStatus, errorReason, processedAtRFC, inputs)
@@ -1182,7 +1295,7 @@ func (s *Store) GetFileValidationReport(fileID string) (FileValidationReport, er
 		out.ProcessedAt = procAtRFC
 	}
 
-	qPolicies := `SELECT ` + "`row_number`" + `, document_number, credit_number, policy_status, validation_json
+	qPolicies := `SELECT ` + "`row_number`" + `, document_number, credit_number, policy_status, validation_json, raw_data_json
 		FROM policies
 		WHERE file_id = ?
 		ORDER BY ` + "`row_number` ASC"
@@ -1195,8 +1308,8 @@ func (s *Store) GetFileValidationReport(fileID string) (FileValidationReport, er
 	inputs := make([]policyRowInput, 0)
 	for rows.Next() {
 		var in policyRowInput
-		var documentNumber, creditNumber, validationJSON sql.NullString
-		if err := rows.Scan(&in.RowNumber, &documentNumber, &creditNumber, &in.PolicyStatus, &validationJSON); err != nil {
+		var documentNumber, creditNumber, validationJSON, rawDataJSON sql.NullString
+		if err := rows.Scan(&in.RowNumber, &documentNumber, &creditNumber, &in.PolicyStatus, &validationJSON, &rawDataJSON); err != nil {
 			continue
 		}
 		if documentNumber.Valid {
@@ -1207,6 +1320,9 @@ func (s *Store) GetFileValidationReport(fileID string) (FileValidationReport, er
 		}
 		if validationJSON.Valid {
 			in.ValidationJSON = validationJSON.String
+		}
+		if rawDataJSON.Valid {
+			in.RawDataJSON = rawDataJSON.String
 		}
 		inputs = append(inputs, in)
 	}

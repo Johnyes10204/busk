@@ -67,7 +67,7 @@ La edad se valida con **`FECHA DE NACIMIENTO`** y la **fecha de activación** (e
 | ACCIDENTES M | **7800** y **11410** | **11800** y **13379** | Otro valor → reportar novedad |
 | CANCER VP | **4503** | **12001** | Otro valor → reportar novedad |
 
-**Implementación API (`validarPlanMapfre`):** el control de plan usa **`plan_name`** (Plan 1 / Plan 2), no `plan_code`. La **prima mensual** debe ser una de las permitidas para ese nombre de plan según el tarifario (primas del diagrama / análisis operativo).
+**Implementación API (`validarPlanMapfre`):** el control de plan usa **`plan_name`** (Plan 1 / Plan 2), no `plan_code`. La prima del archivo debe coincidir con el tarifario como **prima mensual** o como **prima total ÷ `PLAZO INICIAL` (meses)** cuando el plazo es &gt; 0 (misma tolerancia de centavos). Si cuadra, plan y prima se consideran válidos para la carga.
 
 #### B.4 Validaciones **comunes** posteriores a planes (diagrama)
 
@@ -163,16 +163,16 @@ Ambas comparten la misma lógica en el diagrama.
 
 | ID | Regla | Detalle según el diagrama |
 |----|--------|---------------------------|
-| E.1 | Prima desde deuda | Columna calculada: **`DEUDA INICIAL` × %**; debe coincidir con **`PRIMA MENSUAL`** celda a celda. |
-| E.2 | Plazo calculado | Añadir columna **`plazo calculado`**. |
-| E.3 | Plazo vs prima | Añadir columna que **compare plazo calculado frente a prima**. |
-| E.4 | ¿Hay diferencia? | Si **sí** → validar **columna de observación** justifica la diferencia. Si **no** → continuar. |
-| E.5 | Plazo en días (**Nota 2**) | Diferencia en **días** entre fin de plazo y fecha de activación / criterio del diagrama; si el valor es **0** es correcto; si no, procede la rama de **validación** indicada en el flujo. |
+| E.1 | Prima desde deuda | **`DEUDA INICIAL` × %** = **`PRIMA MENSUAL`**. Código: `bolivar_rules.go` (`bolivarPrimaEsperada`). |
+| E.2 | Plazo calculado | Plazo en meses desde fechas de adjudicación y vencimiento (`bolivarPlazoCalculadoMeses`). |
+| E.3 | Plazo vs prima | Columna del diagrama; **no implementada** (el PDF no define la fórmula de comparación). |
+| E.4 | ¿Hay diferencia? | Si **sí** en E.1 o E.5 → la **observación** no vacía justifica; si está vacía → incidencia. |
+| E.5 | Plazo en días (**Nota 2**) | Días entre vencimiento y fin esperado según plazo calculado; **0** = correcto; si no, rama E.4. Tolerancia opcional vía `bolivar_plazo_dias_tolerance` (0 = estricto PDF). |
 | E.6 | Edad | Desglosar **`FECHA DE NACIMIENTO`** en años, meses y días. |
 | E.7 | Rango de edad | Entre **18 años** y **74 años 364 días** (equivalente a menor de 75 años según el texto del diagrama). |
-| E.8 | ¿Cumple edad? | Si **no** → rama **¿deuda mayor a 20M?**; en ambos desenlaces del diagrama se llega a **reportar novedad de edad** / póliza que no se emite; **Nota 3**: correo para corrección, pueden existir **excepciones** de edad de ingreso si están aceptadas formalmente. |
+| E.8 | ¿Cumple edad? | Si **no** y **deuda > 20M** → **incidencia de edad** (bloquea carga). Si **no** y deuda **≤ 20M** → **no** se reporta edad fuera de rango (la fila continúa). No hay incidencia aparte solo por monto. **Nota 3**: excepciones formales de edad de ingreso. |
 | E.9 | `OP BT` | Formato condicional para **duplicados**; debe ser **ID único**. |
-| E.10 | `FECHA VENCIMIENTO ACTUAL` | Debe ser **mes corriente o futuro** respecto al control; **nunca** mes ya vencido. |
+| E.10 | `FECHA VENCIMIENTO ACTUAL` | Fechas en **mes/día/año** (MDY); ambigüedad se resuelve en silencio (sin nota en informe). Solo se reporta si la fecha es inválida o dispara regla (vencimiento &lt; mes facturación + prima &gt; 0 → revisar prima; prima = 0 → cancelación sin nota de fecha). |
 
 ---
 

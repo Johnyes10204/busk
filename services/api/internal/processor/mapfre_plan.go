@@ -6,37 +6,42 @@ import (
 	"strings"
 )
 
-// mapfreTariffLine tarifario por nombre de plan (diagrama B.3) y prima mensual permitida.
+// mapfreTariffLine tarifario por nombre de plan (diagrama B.3): prima mensual y valor asegurado esperados.
 type mapfreTariffLine struct {
-	planName string
-	premium  float64
+	planName      string
+	premium       float64
+	insuredAmount float64
 }
 
 func mapfreTariffsForProduct(code string) ([]mapfreTariffLine, bool) {
 	switch strings.ToUpper(strings.TrimSpace(code)) {
 	case "MAPFRE_VIDA", "MAPFRE_STOCK":
+		// Voluntario
 		return []mapfreTariffLine{
-			{planName: "PLAN 1", premium: 8600},
-			{planName: "PLAN 2", premium: 17100},
+			{planName: "PLAN 1", premium: 8600, insuredAmount: 5_000_000},
+			{planName: "PLAN 2", premium: 17100, insuredAmount: 10_000_000},
 		}, true
 	case "MAPFRE_ACC_MEN":
+		// AP + Accidentes menores
 		return []mapfreTariffLine{
-			{planName: "PLAN 1", premium: 7800},
-			{planName: "PLAN 1", premium: 7410},
-			{planName: "PLAN 2", premium: 10600},
-			{planName: "PLAN 2", premium: 10070},
+			{planName: "PLAN 1", premium: 7800, insuredAmount: 5_000_000},
+			{planName: "PLAN 1", premium: 7410, insuredAmount: 5_000_000},
+			{planName: "PLAN 2", premium: 10600, insuredAmount: 8_000_000},
+			{planName: "PLAN 2", premium: 10070, insuredAmount: 8_000_000},
 		}, true
 	case "MAPFRE_CANCER":
+		// AP + Cáncer
 		return []mapfreTariffLine{
-			{planName: "PLAN 1", premium: 8500},
-			{planName: "PLAN 2", premium: 12000},
+			{planName: "PLAN 1", premium: 8500, insuredAmount: 7_000_000},
+			{planName: "PLAN 2", premium: 13000, insuredAmount: 10_000_000},
+			{planName: "PLAN 2", premium: 12000, insuredAmount: 10_000_000},
 		}, true
 	default:
 		return nil, false
 	}
 }
 
-// validarPlanMapfre cruza plan_name (Plan 1 / Plan 2) con monthly_premium (prima mensual del archivo).
+// validarPlanMapfre cruza plan_name (Plan 1 / Plan 2) con monthly_premium y valor asegurado del archivo.
 func validarPlanMapfre(code string, values map[string]string) []string {
 	tariffs, ok := mapfreTariffsForProduct(code)
 	if !ok {
@@ -60,15 +65,25 @@ func validarPlanMapfre(code string, values map[string]string) []string {
 		return []string{mensajePrimaObligatoriaParaPlan(planName)}
 	}
 
+	termMonths, _ := parseFlexibleNumber(strings.TrimSpace(values["initial_term_months"]))
 	var matched *mapfreTariffLine
 	for i := range lines {
-		if montosEquivalentes(prem, lines[i].premium) {
+		if mapfrePrimaCoincideTarifa(prem, lines[i].premium, termMonths) {
 			matched = &lines[i]
 			break
 		}
 	}
 	if matched == nil {
-		return []string{mensajePrimaNoCoincideConPlan(planName, premRaw, primasParaPlan(lines))}
+		return []string{mensajePrimaNoCoincideConPlan(planName, premRaw, primasParaPlan(lines), termMonths)}
+	}
+
+	insuredRaw := valorAseguradoDesdeValues(values)
+	insured, _ := parseFlexibleNumber(insuredRaw)
+	if insuredRaw == "" || insured <= 0 {
+		return []string{mensajeValorAseguradoObligatorioParaPlan(planName, matched.premium, matched.insuredAmount)}
+	}
+	if !montosEquivalentes(insured, matched.insuredAmount) {
+		return []string{mensajeValorAseguradoNoCoincideConPlan(planName, premRaw, insuredRaw, matched.insuredAmount)}
 	}
 
 	return nil
@@ -102,6 +117,18 @@ func montosEquivalentes(a, b float64) bool {
 		return false
 	}
 	return math.Abs(a-b) < 0.01
+}
+
+// mapfrePrimaCoincideTarifa: la prima del archivo puede venir como mensual o como total del plazo.
+// Si prima/plazo (meses) coincide con el tarifario, se acepta como prima mensual válida.
+func mapfrePrimaCoincideTarifa(premArchivo, primaTarifa, plazoMeses float64) bool {
+	if montosEquivalentes(premArchivo, primaTarifa) {
+		return true
+	}
+	if plazoMeses > 0 {
+		return montosEquivalentes(premArchivo/plazoMeses, primaTarifa)
+	}
+	return false
 }
 
 func planNombreCoincideLinea(planName, linePlan string) bool {
@@ -155,9 +182,53 @@ func mensajePrimaObligatoriaParaPlan(planName string) string {
 	)
 }
 
-func mensajePrimaNoCoincideConPlan(planName, premRaw string, primasPermitidas []float64) string {
+func mensajePrimaNoCoincideConPlan(planName, premRaw string, primasPermitidas []float64, plazoMeses float64) string {
+	hint := ""
+	if plazoMeses > 0 {
+		hint = fmt.Sprintf(
+			" También se validó prima ÷ plazo (%s meses) frente al tarifario.",
+			formatoMontoNegocio(plazoMeses),
+		)
+	}
 	return fmt.Sprintf(
-		"La prima mensual (%s) no coincide con el plan indicado «%s»; primas permitidas para ese plan: %s.",
-		strings.TrimSpace(premRaw), strings.TrimSpace(planName), formatoListaMontos(primasPermitidas),
+		"La prima (%s) no coincide con el plan «%s» como prima mensual ni como total del plazo dividido entre meses; primas mensuales permitidas: %s.%s",
+		strings.TrimSpace(premRaw), strings.TrimSpace(planName), formatoListaMontos(primasPermitidas), hint,
 	)
+}
+
+func mensajeValorAseguradoObligatorioParaPlan(planName string, premium, insuredExpected float64) string {
+	return fmt.Sprintf(
+		"Plan no válido: el valor asegurado es obligatorio para «%s» con prima %s (valor asegurado esperado: %s).",
+		strings.TrimSpace(planName),
+		formatoMontoNegocio(premium),
+		formatoMontoNegocio(insuredExpected),
+	)
+}
+
+func mensajeValorAseguradoNoCoincideConPlan(planName, premRaw, insuredRaw string, insuredExpected float64) string {
+	return fmt.Sprintf(
+		"Plan no válido: el valor asegurado (%s) no corresponde a «%s» con prima %s (valor asegurado esperado: %s).",
+		strings.TrimSpace(insuredRaw),
+		strings.TrimSpace(planName),
+		strings.TrimSpace(premRaw),
+		formatoMontoNegocio(insuredExpected),
+	)
+}
+
+// valorAseguradoDesdeValues lee el monto desde el campo canónico o desde encabezados del archivo.
+func valorAseguradoDesdeValues(values map[string]string) string {
+	for _, key := range []string{"insured_amount", "VALOR ASEGURADO", "VALOR_ASEGURADO"} {
+		if v := strings.TrimSpace(values[key]); v != "" {
+			return v
+		}
+	}
+	for key, val := range values {
+		upper := strings.ToUpper(strings.TrimSpace(key))
+		if strings.Contains(upper, "VALOR") && strings.Contains(upper, "ASEGURADO") {
+			if v := strings.TrimSpace(val); v != "" {
+				return v
+			}
+		}
+	}
+	return ""
 }
