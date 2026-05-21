@@ -1319,6 +1319,7 @@ func seed(st *store.Store) {
 			{CanonicalField: "activation_date", SourceHeader: "FECHA ADJUDICACION", Required: true},
 			{CanonicalField: "loan_award_date", SourceHeader: "FECHA ADJUDICACION", Required: true},
 			{CanonicalField: "loan_due_date_current", SourceHeader: "FECHA VENCIMIENTO ACTUAL", Required: true},
+			{CanonicalField: "observacion", SourceHeader: "OBSERVACION", Required: false},
 		}, optionalPersonMappings()...),
 		Rules: []model.RuleConfig{
 			{Type: "required_not_empty", Field: "credit_number"},
@@ -1327,6 +1328,7 @@ func seed(st *store.Store) {
 		},
 	})
 	_ = st.UpsertProductRuleParam("bolivar_stock", "debt_manual_threshold", "20000000")
+	_ = st.UpsertProductRuleParam("bolivar_stock", "bolivar_prima_calc_tolerance", "1")
 	_ = st.UpsertProductRuleParam("bolivar_stock", "age_min", "18")
 	_ = st.UpsertProductRuleParam("bolivar_stock", "age_max", "75.997")
 	_ = st.UpsertProductRuleParam("bolivar_stock", "age_max_days_before_birthday", "1")
@@ -1349,6 +1351,7 @@ func seed(st *store.Store) {
 			{CanonicalField: "activation_date", SourceHeader: "FECHA ADJUDICACION", Required: true},
 			{CanonicalField: "loan_award_date", SourceHeader: "FECHA ADJUDICACION", Required: true},
 			{CanonicalField: "loan_due_date_current", SourceHeader: "FECHA VENCIMIENTO ACTUAL", Required: true},
+			{CanonicalField: "observacion", SourceHeader: "OBSERVACION", Required: false},
 		}, optionalPersonMappings()...),
 		Rules: []model.RuleConfig{
 			{Type: "required_not_empty", Field: "credit_number"},
@@ -1378,6 +1381,7 @@ func seed(st *store.Store) {
 			{CanonicalField: "plan_code", SourceHeader: "CODIGO SEGURO", Required: false},
 			{CanonicalField: "insured_amount", SourceHeader: "VALOR ASEGURADO", Required: false},
 			{CanonicalField: "office", SourceHeader: "OFICINA", Required: false},
+			{CanonicalField: "observacion", SourceHeader: "OBSERVACION", Required: false},
 		}, optionalPersonMappings()...),
 		Rules: []model.RuleConfig{
 			{Type: "required_not_empty", Field: "credit_number"},

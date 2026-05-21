@@ -308,6 +308,26 @@ func mensajeVencimientoMenorAdjudicacion() string {
 	return "La fecha de vencimiento actual es anterior a la fecha de adjudicación del crédito."
 }
 
+func mensajePrimaCalculadaDifiere(primaMensual, primaCalc, deuda, tasa float64) string {
+	return fmt.Sprintf(
+		"La prima mensual (%s) no coincide con el valor calculado a partir de la deuda inicial (%s) y la tasa (%.4f%%): prima esperada %s, diferencia %s. Si el valor tiene justificación, registre la observación en la columna OBSERVACION.",
+		formatoMontoNegocio(primaMensual),
+		formatoMontoNegocio(deuda),
+		tasa,
+		formatoMontoNegocio(primaCalc),
+		formatoMontoNegocio(math.Abs(primaCalc-primaMensual)),
+	)
+}
+
+func mensajePrimaCalculadaDifiereJustificada(primaMensual, primaCalc float64, obs string) string {
+	return fmt.Sprintf(
+		"La prima mensual (%s) difiere de la calculada (%s); diferencia justificada con observación: «%s».",
+		formatoMontoNegocio(primaMensual),
+		formatoMontoNegocio(primaCalc),
+		strings.TrimSpace(obs),
+	)
+}
+
 func mensajeDeudaAltaRevisionManual(umbral float64) string {
 	return fmt.Sprintf(
 		"La deuda inicial supera el umbral de revisión manual (más de %s pesos); requiere validación antes de emitir.",

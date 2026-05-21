@@ -64,7 +64,8 @@ type ruleRuntimeConfig struct {
 	AgeMin                     float64
 	AgeMax                     float64
 	HasAgeLimits               bool
-	BolivarDebtManualThreshold float64
+	BolivarDebtManualThreshold  float64
+	BolivarPrimaCalcTolerance   float64
 	MapfreRequireCurrentMonth    bool
 	MapfreDateToleranceDays      int // tolerancia vigencias (plazo); no confundir con edad
 	AgeMaxDaysBeforeBirthday     int // días antes del cumpleaños tope (75.997 → 1 = hasta el día anterior al 76)
@@ -866,6 +867,7 @@ func (s *Service) buildRuleRuntimeConfig(p model.Product) ruleRuntimeConfig {
 		RequiredValidDateFields:    []string{},
 		AllowedPremiums:            s.store.GetAllowedPremiums(p.ID),
 		BolivarDebtManualThreshold: 20000000,
+		BolivarPrimaCalcTolerance:  1.0,
 		MapfreRequireCurrentMonth:  true,
 		MapfreDateToleranceDays:    2,
 	}
@@ -896,6 +898,11 @@ func (s *Service) buildRuleRuntimeConfig(p model.Product) ruleRuntimeConfig {
 	if v, ok := s.store.GetProductRuleParam(p.ID, "debt_manual_threshold"); ok {
 		if n, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
 			cfg.BolivarDebtManualThreshold = n
+		}
+	}
+	if v, ok := s.store.GetProductRuleParam(p.ID, "bolivar_prima_calc_tolerance"); ok {
+		if n, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil && n >= 0 {
+			cfg.BolivarPrimaCalcTolerance = n
 		}
 	}
 	if v, ok := s.store.GetProductRuleParam(p.ID, "mapfre_require_current_month"); ok {
@@ -1149,6 +1156,22 @@ func applyDiagramRules(
 		due := parseDateWithLayouts(values["loan_due_date_current"], cfg.DateLayouts)
 		if !adj.IsZero() && !due.IsZero() && due.Before(adj) {
 			hardViolations = append(hardViolations, mensajeVencimientoMenorAdjudicacion())
+		}
+		// Prima calculada: DEUDA_INICIAL × (tasa% / 100) debe coincidir con PRIMA MENSUAL.
+		// Si difieren y existe una observación, se reporta como nota; sin observación es incidencia.
+		deuda, errD := parseFlexibleNumber(values["initial_debt_amount"])
+		tasa, errT := parseFlexibleNumber(values["rate_percent"])
+		prima, errP := parseFlexibleNumber(values["monthly_premium"])
+		if errD == nil && errT == nil && errP == nil && deuda > 0 && tasa > 0 {
+			primaCalc := deuda * (tasa / 100)
+			if math.Abs(primaCalc-prima) > cfg.BolivarPrimaCalcTolerance {
+				obs := strings.TrimSpace(values["observacion"])
+				if obs == "" {
+					hardViolations = append(hardViolations, mensajePrimaCalculadaDifiere(prima, primaCalc, deuda, tasa))
+				} else {
+					softNotes = append(softNotes, mensajePrimaCalculadaDifiereJustificada(prima, primaCalc, obs))
+				}
+			}
 		}
 		if debt, err := parseFlexibleNumber(values["initial_debt_amount"]); err == nil && debt > cfg.BolivarDebtManualThreshold {
 			softNotes = append(softNotes, mensajeDeudaAltaRevisionManual(cfg.BolivarDebtManualThreshold))
