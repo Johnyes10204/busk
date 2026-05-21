@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Busk Seguros - Documentacion</title>
+    <link rel="stylesheet" href="//cdn.jsdelivr.net/npm/docsify@4/lib/themes/vue.css" />
+  </head>
+  <body>
+    <div id="app">Cargando documentacion...</div>
+    <script>
+      window.$docsify = {
+        name: "Busk Seguros Docs",
+        repo: "",
+        loadSidebar: true,
+        subMaxLevel: 3,
+        auto2top: true,
+        homepage: "README.md",
+        search: {
+          maxAge: 86400000,
+          paths: "auto",
+          placeholder: "Buscar en docs",
+          noData: "Sin resultados"
+        }
+      };
+    </script>
+    <script src="//cdn.jsdelivr.net/npm/docsify@4"></script>
+    <script src="//cdn.jsdelivr.net/npm/docsify@4/lib/plugins/search.min.js"></script>
+  </body>
+</html>

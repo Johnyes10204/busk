@@ -1,0 +1,16 @@
+{
+  "mysql_dsn": "root@tcp(127.0.0.1:3306)/busk?parseTime=true&multiStatements=true",
+  "processor_workers": 2,
+  "processor_read_full_file_on_row_errors": true,
+  "files_archive_dir": "./data/files-archive",
+  "sftp_host": "192.168.46.101",
+  "sftp_port": "2222",
+  "sftp_user": "usuario_ftp",
+  "sftp_password": "",
+  "sftp_remote_dir": ".",
+  "sendgrid_api_key": "",
+  "sendgrid_from_email": "alertas@buskseguros.com",
+  "sendgrid_error_to_emails": [
+    "equipo@buskseguros.com"
+  ]
+}

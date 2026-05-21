@@ -1,0 +1,35 @@
+graph TB
+    subgraph "File System"
+        IN["📂 /data/entrada"]
+        OK["📂 /data/procesados"]
+        ERR["📂 /data/error"]
+        REF["📂 /data/referencia"]
+    end
+
+    subgraph "Busk API (Go)"
+        W["👁️ File Watcher (fsnotify)"]
+        ID["🔍 Identificador de Producto"]
+        P["📋 Parser (Excel/CSV Streaming)"]
+        RE["⚙️ Motor de Reglas"]
+        SVC["🧩 Servicios Core"]
+        API["🌐 REST API (Gin)"]
+        NF["📣 Notificaciones"]
+    end
+
+    subgraph "Persistencia"
+        DB[("🗄️ PostgreSQL")]
+    end
+
+    IN --> W
+    W --> ID
+    ID --> P
+    P --> RE
+    RE -->|"✅ OK"| SVC
+    RE -->|"❌ FAIL"| ERR
+    RE -->|"❌ FAIL"| NF
+    SVC --> DB
+    SVC --> OK
+    SVC -->|"✅ OK"| NF
+    API --> SVC
+    API --> DB
+    REF -.->|"archivos ref"| RE

@@ -1,0 +1,961 @@
+{
+  "info": {
+    "name": "Busk Seguros API",
+    "description": "Colección completa y operativa paso a paso para el flujo E2E: bootstrap de productos/parametrías, gestión de primas permitidas, scan SFTP, seguimiento de progreso, consulta de archivos, descarga del archivo archivado, y consultas de pólizas (listado + búsqueda paginada). Incluye carpeta '00 - Flujo E2E Paso a Paso' para ejecutar en orden.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_postman_id": "3f9a5ef1-busk-seguros-api-collection"
+  },
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "GET Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "health"
+              ]
+            },
+            "description": "Verifica que el API está arriba."
+          }
+        }
+      ]
+    },
+    {
+      "name": "00 - Flujo E2E Paso a Paso",
+      "item": [
+        {
+          "name": "Paso 01 - GET Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "health"
+              ]
+            },
+            "description": "Valida que el API esté arriba antes del flujo."
+          }
+        },
+        {
+          "name": "Paso 02 - POST Bootstrap Sample Products",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/bootstrap/sample-products",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "bootstrap",
+                "sample-products"
+              ]
+            },
+            "description": "Carga/actualiza seed de productos y parámetros en BD."
+          }
+        },
+        {
+          "name": "Paso 03 - GET List Products",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/products",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "products"
+              ]
+            },
+            "description": "Verifica productos configurados (incluye STOCK_MAPFRE y STOCK-)."
+          }
+        },
+        {
+          "name": "Paso 04 - GET Allowed Premiums by Product",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/products/allowed-premiums?product_id={{productId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "products",
+                "allowed-premiums"
+              ],
+              "query": [
+                {
+                  "key": "product_id",
+                  "value": "{{productId}}"
+                }
+              ]
+            },
+            "description": "Confirma catálogo de primas permitidas del producto."
+          }
+        },
+        {
+          "name": "Paso 05 - POST Scan and Enqueue",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/process/scan",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "process",
+                "scan"
+              ]
+            },
+            "description": "Escanea SFTP y encola archivos para procesamiento asíncrono (workers)."
+          }
+        },
+        {
+          "name": "Paso 06 - GET Process Progress",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/process/progress",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "process",
+                "progress"
+              ]
+            },
+            "description": "Monitorea avance hasta estado final por file_id."
+          }
+        },
+        {
+          "name": "Paso 07 - GET List Files",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "files"
+              ]
+            },
+            "description": "Obtiene resultado final, hash y rutas (SFTP + archive_path local)."
+          }
+        },
+        {
+          "name": "Paso 08 - GET File Summary",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/files/summary?file_id={{fileId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "files",
+                "summary"
+              ],
+              "query": [
+                {
+                  "key": "file_id",
+                  "value": "{{fileId}}"
+                }
+              ]
+            },
+            "description": "Resumen de calidad por archivo procesado."
+          }
+        },
+        {
+          "name": "Paso 09 - GET Download Processed File",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/files/download?file_id={{fileId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "files",
+                "download"
+              ],
+              "query": [
+                {
+                  "key": "file_id",
+                  "value": "{{fileId}}"
+                }
+              ]
+            },
+            "description": "Descarga el archivo archivado local asociado al file_id."
+          }
+        },
+        {
+          "name": "Paso 10 - GET Policies Search by Document",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/policies/search?document_number={{documentNumber}}&page={{page}}&page_size={{pageSize}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "policies",
+                "search"
+              ],
+              "query": [
+                {
+                  "key": "document_number",
+                  "value": "{{documentNumber}}"
+                },
+                {
+                  "key": "page",
+                  "value": "{{page}}"
+                },
+                {
+                  "key": "page_size",
+                  "value": "{{pageSize}}"
+                }
+              ]
+            },
+            "description": "Consulta pólizas por documento, con paginación."
+          }
+        },
+        {
+          "name": "Paso 11 - GET Policies by Product and Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/policies?product_id={{productId}}&status={{policyStatus}}&limit={{limit}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "policies"
+              ],
+              "query": [
+                {
+                  "key": "product_id",
+                  "value": "{{productId}}"
+                },
+                {
+                  "key": "status",
+                  "value": "{{policyStatus}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "{{limit}}"
+                }
+              ]
+            },
+            "description": "Valida estados finales (ACTIVE/FROZEN/MANUAL_REVIEW/CANCELLED)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Products",
+      "item": [
+        {
+          "name": "POST Bootstrap Sample Products",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/bootstrap/sample-products",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "bootstrap",
+                "sample-products"
+              ]
+            },
+            "description": "Carga productos semilla MAPFRE y BOLIVAR con mappings y reglas iniciales."
+          }
+        },
+        {
+          "name": "GET List Products",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/products",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "products"
+              ]
+            },
+            "description": "Lista productos configurados."
+          }
+        },
+        {
+          "name": "POST Upsert Product",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"mapfre_vida_custom\",\n  \"code\": \"MAPFRE_VIDA\",\n  \"insurer\": \"MAPFRE\",\n  \"file_prefix\": \"INCLUSION-VIDA-MAPFRE\",\n  \"sheet_name\": \"Hoja1\",\n  \"header_row\": 1,\n  \"mappings\": [\n    { \"canonical_field\": \"document_number\", \"source_header\": \"IDENTIFICACIONAFILIADO\", \"required\": true },\n    { \"canonical_field\": \"birth_date\", \"source_header\": \"FECHANACIMIENTO\", \"required\": true },\n    { \"canonical_field\": \"monthly_premium\", \"source_header\": \"PRIMAMENSUALPERIODO\", \"required\": true },\n    { \"canonical_field\": \"credit_number\", \"source_header\": \"NUMEROPRESTAMO\", \"required\": true },\n    { \"canonical_field\": \"coverage_start_date\", \"source_header\": \"FECHA INICIO DE VIGENCIA\", \"required\": true },\n    { \"canonical_field\": \"coverage_end_date\", \"source_header\": \"FECHAFINVIGENCIADERIESGO REAL\", \"required\": true },\n    { \"canonical_field\": \"initial_term_months\", \"source_header\": \"PLAZO INICIAL\", \"required\": true },\n    { \"canonical_field\": \"plan_name\", \"source_header\": \"NOMBREPLAN\", \"required\": false },\n    { \"canonical_field\": \"plan_code\", \"source_header\": \"CODIGO SEGURO\", \"required\": false },\n    { \"canonical_field\": \"office\", \"source_header\": \"OFICINA\", \"required\": false }\n  ],\n  \"rules\": [\n    { \"type\": \"required_not_empty\", \"field\": \"document_number\", \"params\": {} },\n    { \"type\": \"required_not_empty\", \"field\": \"birth_date\", \"params\": {} },\n    { \"type\": \"required_not_empty\", \"field\": \"credit_number\", \"params\": {} },\n    { \"type\": \"number_gte\", \"field\": \"monthly_premium\", \"params\": { \"min\": 0 } },\n    { \"type\": \"freeze_on_zero_premium\", \"field\": \"monthly_premium\", \"params\": {} }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/products",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "products"
+              ]
+            },
+            "description": "Crea o actualiza un producto con mappings y reglas."
+          }
+        },
+        {
+          "name": "POST Upsert Product - MAPFRE (con FROZEN por prima 0)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"mapfre_acc_men_cfg\",\n  \"code\": \"MAPFRE_ACC_MEN\",\n  \"insurer\": \"MAPFRE\",\n  \"file_prefix\": \"INCLUSION-ACCIDEMENOR-MAPFRE\",\n  \"sheet_name\": \"Hoja1\",\n  \"header_row\": 1,\n  \"mappings\": [\n    { \"canonical_field\": \"document_number\", \"source_header\": \"NUM DOCUM\", \"required\": true },\n    { \"canonical_field\": \"birth_date\", \"source_header\": \"FECHA NAC\", \"required\": true },\n    { \"canonical_field\": \"monthly_premium\", \"source_header\": \"PRIMA\", \"required\": true },\n    { \"canonical_field\": \"credit_number\", \"source_header\": \"NUMERO DE CREDITO\", \"required\": true },\n    { \"canonical_field\": \"insured_amount\", \"source_header\": \"VALOR ASEGURADO\", \"required\": false },\n    { \"canonical_field\": \"coverage_start_date\", \"source_header\": \"FECHA INICIO DE VIGENCIA\", \"required\": true },\n    { \"canonical_field\": \"coverage_end_date\", \"source_header\": \"FECHAFINVIGENCIADERIESGO REAL\", \"required\": true },\n    { \"canonical_field\": \"plan_name\", \"source_header\": \"PLAN\", \"required\": false },\n    { \"canonical_field\": \"plan_code\", \"source_header\": \"COD PLAN\", \"required\": false },\n    { \"canonical_field\": \"office\", \"source_header\": \"OFICINA\", \"required\": false }\n  ],\n  \"rules\": [\n    { \"type\": \"required_not_empty\", \"field\": \"document_number\", \"params\": {} },\n    { \"type\": \"required_not_empty\", \"field\": \"birth_date\", \"params\": {} },\n    { \"type\": \"required_not_empty\", \"field\": \"credit_number\", \"params\": {} },\n    { \"type\": \"number_gte\", \"field\": \"monthly_premium\", \"params\": { \"min\": 0 } },\n    { \"type\": \"freeze_on_zero_premium\", \"field\": \"monthly_premium\", \"params\": {} }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/products",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "products"
+              ]
+            },
+            "description": "Ejemplo de producto MAPFRE con politica FROZEN configurable desde BD."
+          }
+        },
+        {
+          "name": "POST Upsert Product - BOLIVAR (sin FROZEN, prima >= 0)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"bolivar_stock_cfg\",\n  \"code\": \"BOLIVAR_STOCK\",\n  \"insurer\": \"BOLIVAR\",\n  \"file_prefix\": \"STOCK-\",\n  \"sheet_name\": \"FACTURACION FEBRERO 2026\",\n  \"header_row\": 1,\n  \"mappings\": [\n    { \"canonical_field\": \"document_number\", \"source_header\": \"IDENTIFICACION\", \"required\": true },\n    { \"canonical_field\": \"birth_date\", \"source_header\": \"FECHA DE NACIMIENTO\", \"required\": true },\n    { \"canonical_field\": \"credit_number\", \"source_header\": \"OP BT\", \"required\": true },\n    { \"canonical_field\": \"initial_debt_amount\", \"source_header\": \"DEUDA INICIAL\", \"required\": true },\n    { \"canonical_field\": \"monthly_premium\", \"source_header\": \"PRIMA MENSUAL\", \"required\": true },\n    { \"canonical_field\": \"rate_percent\", \"source_header\": \"%\", \"required\": true },\n    { \"canonical_field\": \"loan_award_date\", \"source_header\": \"FECHA ADJUDICACION\", \"required\": true },\n    { \"canonical_field\": \"loan_due_date_current\", \"source_header\": \"FECHA VENCIMIENTO ACTUAL\", \"required\": true }\n  ],\n  \"rules\": [\n    { \"type\": \"required_not_empty\", \"field\": \"credit_number\", \"params\": {} },\n    { \"type\": \"number_gt\", \"field\": \"initial_debt_amount\", \"params\": { \"min\": 0 } },\n    { \"type\": \"number_gte\", \"field\": \"monthly_premium\", \"params\": { \"min\": 0 } }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/products",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "products"
+              ]
+            },
+            "description": "Ejemplo BOLIVAR sin congelacion; la politica se define por reglas guardadas en BD."
+          }
+        },
+        {
+          "name": "POST Upsert Product - Nuevo Producto (Template)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"nuevo_producto_demo\",\n  \"code\": \"NUEVO_PRODUCTO\",\n  \"insurer\": \"ASEGURADORA_X\",\n  \"file_prefix\": \"NUEVO_PREFIJO_\",\n  \"sheet_name\": \"Hoja1\",\n  \"header_row\": 1,\n  \"mappings\": [\n    { \"canonical_field\": \"document_number\", \"source_header\": \"DOCUMENTO\", \"required\": true },\n    { \"canonical_field\": \"birth_date\", \"source_header\": \"FECHA_NACIMIENTO\", \"required\": false },\n    { \"canonical_field\": \"credit_number\", \"source_header\": \"CREDITO\", \"required\": true },\n    { \"canonical_field\": \"loan_award_date\", \"source_header\": \"FECHA_ADJUDICACION\", \"required\": false },\n    { \"canonical_field\": \"loan_due_date_current\", \"source_header\": \"FECHA_VENCIMIENTO\", \"required\": false },\n    { \"canonical_field\": \"initial_debt_amount\", \"source_header\": \"DEUDA_INICIAL\", \"required\": false },\n    { \"canonical_field\": \"rate_percent\", \"source_header\": \"TASA\", \"required\": false },\n    { \"canonical_field\": \"monthly_premium\", \"source_header\": \"PRIMA\", \"required\": true },\n    { \"canonical_field\": \"policy_group_number\", \"source_header\": \"POLIZA_GRUPO\", \"required\": false },\n    { \"canonical_field\": \"coverage_start_date\", \"source_header\": \"FECHA_INICIO_VIGENCIA\", \"required\": false },\n    { \"canonical_field\": \"coverage_end_date\", \"source_header\": \"FECHA_FIN_VIGENCIA\", \"required\": false },\n    { \"canonical_field\": \"plan_name\", \"source_header\": \"PLAN\", \"required\": false },\n    { \"canonical_field\": \"plan_code\", \"source_header\": \"COD_PLAN\", \"required\": false },\n    { \"canonical_field\": \"office\", \"source_header\": \"OFICINA\", \"required\": false },\n    { \"canonical_field\": \"observations\", \"source_header\": \"OBSERVACIONES\", \"required\": false }\n  ],\n  \"rules\": [\n    { \"type\": \"required_not_empty\", \"field\": \"document_number\", \"params\": {} },\n    { \"type\": \"required_not_empty\", \"field\": \"credit_number\", \"params\": {} },\n    { \"type\": \"number_gte\", \"field\": \"monthly_premium\", \"params\": { \"min\": 0 } }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/products",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "products"
+              ]
+            },
+            "description": "Template para crear cualquier producto nuevo con sus campos y reglas desde BD."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Allowed Premiums",
+      "item": [
+        {
+          "name": "GET Allowed Premiums by Product",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/products/allowed-premiums?product_id={{productId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "products",
+                "allowed-premiums"
+              ],
+              "query": [
+                {
+                  "key": "product_id",
+                  "value": "{{productId}}"
+                }
+              ]
+            },
+            "description": "Consulta el catálogo de primas permitidas del producto."
+          }
+        },
+        {
+          "name": "PUT Replace Allowed Premiums",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"product_id\": \"mapfre_acc_men\",\n  \"premiums\": [7800, 7410, 10600, 10070]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/products/allowed-premiums",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "products",
+                "allowed-premiums"
+              ]
+            },
+            "description": "Reemplaza completamente la lista de primas permitidas para un producto."
+          }
+        },
+        {
+          "name": "POST Add Allowed Premium",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"product_id\": \"mapfre_acc_men\",\n  \"premium\": 12000\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/products/allowed-premiums",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "products",
+                "allowed-premiums"
+              ]
+            },
+            "description": "Agrega una prima permitida puntual al producto."
+          }
+        },
+        {
+          "name": "DELETE Allowed Premium (single)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/products/allowed-premiums?product_id={{productId}}&premium={{premiumValue}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "products",
+                "allowed-premiums"
+              ],
+              "query": [
+                {
+                  "key": "product_id",
+                  "value": "{{productId}}"
+                },
+                {
+                  "key": "premium",
+                  "value": "{{premiumValue}}"
+                }
+              ]
+            },
+            "description": "Elimina una prima permitida del catálogo del producto."
+          }
+        },
+        {
+          "name": "DELETE Allowed Premiums (all product)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/products/allowed-premiums?product_id={{productId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "products",
+                "allowed-premiums"
+              ],
+              "query": [
+                {
+                  "key": "product_id",
+                  "value": "{{productId}}"
+                }
+              ]
+            },
+            "description": "Limpia todo el catálogo de primas permitidas del producto."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Processing",
+      "item": [
+        {
+          "name": "POST Scan and Enqueue",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/process/scan",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "process",
+                "scan"
+              ]
+            },
+            "description": "Escanea SFTP, prioriza STOCK y encola procesamiento asíncrono (uno a la vez)."
+          }
+        },
+        {
+          "name": "GET Process Progress",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/process/progress",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "process",
+                "progress"
+              ]
+            },
+            "description": "Devuelve progreso por archivo con porcentaje y etapa."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Files",
+      "item": [
+        {
+          "name": "GET List Files",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "files"
+              ]
+            },
+            "description": "Lista archivos procesados con estado final (incl. SKIPPED por hash duplicado cuando aplica)."
+          }
+        },
+        {
+          "name": "GET File Summary",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/files/summary?file_id={{fileId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "files",
+                "summary"
+              ],
+              "query": [
+                {
+                  "key": "file_id",
+                  "value": "{{fileId}}"
+                }
+              ]
+            },
+            "description": "Resumen de calidad por archivo: ACTIVE, FROZEN, MANUAL_REVIEW, CANCELLED."
+          }
+        },
+        {
+          "name": "GET Download Processed File",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/files/download?file_id={{fileId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "files",
+                "download"
+              ],
+              "query": [
+                {
+                  "key": "file_id",
+                  "value": "{{fileId}}"
+                }
+              ]
+            },
+            "description": "Descarga desde el archivo archivado local asociado al file_id."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Policies",
+      "item": [
+        {
+          "name": "GET Policies by Product",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/policies?product_id={{productId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "policies"
+              ],
+              "query": [
+                {
+                  "key": "product_id",
+                  "value": "{{productId}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "{{limit}}",
+                  "description": "Opcional. Sin límite el API devuelve todas las filas del producto.",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Lista pólizas cargadas por producto. Query opcional: `limit`."
+          }
+        },
+        {
+          "name": "GET Policies by Product and Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/policies?product_id={{productId}}&status={{policyStatus}}&limit={{limit}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "policies"
+              ],
+              "query": [
+                {
+                  "key": "product_id",
+                  "value": "{{productId}}"
+                },
+                {
+                  "key": "status",
+                  "value": "{{policyStatus}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "{{limit}}"
+                }
+              ]
+            },
+            "description": "Filtra por estado de póliza (`status`) y opcionalmente limita resultados (`limit`)."
+          }
+        },
+        {
+          "name": "GET Policies Search by Credit",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/policies/search?credit_number={{creditNumber}}&page={{page}}&page_size={{pageSize}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "policies",
+                "search"
+              ],
+              "query": [
+                {
+                  "key": "credit_number",
+                  "value": "{{creditNumber}}"
+                },
+                {
+                  "key": "page",
+                  "value": "{{page}}",
+                  "description": "Página 1-based. Incrementar mientras has_next_page sea true."
+                },
+                {
+                  "key": "page_size",
+                  "value": "{{pageSize}}",
+                  "description": "Tamaño de página (máx. 200 en el API)."
+                },
+                {
+                  "key": "product_id",
+                  "value": "{{productId}}",
+                  "description": "Opcional. Activar la fila para acotar por producto.",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Busca por `credit_number`. Paginación con `page` y `page_size`; la respuesta trae `total` y `total_pages` para recorrer todas las páginas."
+          }
+        },
+        {
+          "name": "GET Policies Search by Document",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/policies/search?document_number={{documentNumber}}&page={{page}}&page_size={{pageSize}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "policies",
+                "search"
+              ],
+              "query": [
+                {
+                  "key": "document_number",
+                  "value": "{{documentNumber}}"
+                },
+                {
+                  "key": "page",
+                  "value": "{{page}}"
+                },
+                {
+                  "key": "page_size",
+                  "value": "{{pageSize}}"
+                },
+                {
+                  "key": "product_id",
+                  "value": "{{productId}}",
+                  "description": "Opcional. Activar la fila para acotar por producto.",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Busca por `document_number`. Paginado igual que por crédito; combinable con `credit_number` (AND)."
+          }
+        },
+        {
+          "name": "GET Policies Search (credit + document AND)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/policies/search?credit_number={{creditNumber}}&document_number={{documentNumber}}&page={{page}}&page_size={{pageSize}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "policies",
+                "search"
+              ],
+              "query": [
+                {
+                  "key": "credit_number",
+                  "value": "{{creditNumber}}"
+                },
+                {
+                  "key": "document_number",
+                  "value": "{{documentNumber}}"
+                },
+                {
+                  "key": "page",
+                  "value": "{{page}}"
+                },
+                {
+                  "key": "page_size",
+                  "value": "{{pageSize}}"
+                },
+                {
+                  "key": "product_id",
+                  "value": "{{productId}}",
+                  "description": "Opcional.",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "AND estricto entre crédito y documento. Usa `total_pages` o `has_next_page` para pedir `page`=2, 3, … hasta cubrir todos los resultados."
+          }
+        }
+      ]
+    }
+  ],
+  "event": [],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "productId",
+      "value": "mapfre_vida"
+    },
+    {
+      "key": "policyStatus",
+      "value": "FROZEN"
+    },
+    {
+      "key": "limit",
+      "value": "50"
+    },
+    {
+      "key": "fileId",
+      "value": "file_0000000000000000000"
+    },
+    {
+      "key": "creditNumber",
+      "value": "123456789"
+    },
+    {
+      "key": "documentNumber",
+      "value": "1234567890"
+    },
+    {
+      "key": "page",
+      "value": "1"
+    },
+    {
+      "key": "pageSize",
+      "value": "50"
+    },
+    {
+      "key": "premiumValue",
+      "value": "12000"
+    }
+  ]
+}

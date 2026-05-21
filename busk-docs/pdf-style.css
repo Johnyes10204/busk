@@ -1,0 +1,68 @@
+body {
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.4;
+    color: #333;
+}
+h1 {
+    page-break-before: always;  /* Cada modulo nuevo arranca en hoja en limpio */
+    color: #0ea5e9;
+    border-bottom: 2px solid #0ea5e9;
+    padding-bottom: 5px;
+    margin-top: 0;
+    padding-top: 0;
+}
+h1:first-of-type {
+    page-break-before: avoid;
+}
+h2 {
+    margin-top: 1em;
+    margin-bottom: 0.5em;
+    color: #2c3e50;
+    page-break-after: avoid;
+}
+h3 {
+    margin-top: 0.8em;
+    margin-bottom: 0.4em;
+    color: #34495e;
+    page-break-after: avoid;
+}
+p {
+    margin-bottom: 0.8em;
+}
+img {
+    max-width: 100%;
+    max-height: 600px;
+    height: auto;
+    object-fit: contain;
+    display: block;
+    margin: 10px auto;
+    page-break-inside: avoid;
+}
+pre {
+    page-break-inside: avoid;
+    background-color: #f8f9fa;
+    padding: 15px;
+    border-radius: 5px;
+    border: 1px solid #e9ecef;
+    overflow-x: hidden;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 20px 0;
+    page-break-inside: auto;
+}
+tr {
+    page-break-inside: avoid;
+    page-break-after: auto;
+}
+th, td {
+    border: 1px solid #ddd;
+    padding: 12px 8px;
+    text-align: left;
+}
+th {
+    background-color: #f1f5f9;
+}

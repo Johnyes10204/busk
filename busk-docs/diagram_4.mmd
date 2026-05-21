@@ -1,0 +1,19 @@
+flowchart TD
+    DB[(PostgreSQL \n Stock, Reglas y Tracking)]
+    
+    subgraph Core [Busk Core App - Go]
+        direction TB
+        W(FTP Watcher)
+        P(File Parser)
+        RE{Rule Engine}
+        Auth(Auth Middleware \n JWT)
+        API(RESTful API)
+    end
+    Broker([Broker Externo])
+    
+    W -- Envía RAW file --> P
+    P -- Envía Batch --> RE
+    RE -- Upsert/Reconcilia --> DB
+    Broker -- Peticiones API --> Auth
+    Auth -- Rutea req --> API
+    API -- Consulta Stock --> DB

@@ -1,0 +1,42 @@
+erDiagram
+    PRODUCT {
+        uuid id PK
+        string code UK "ej: MAPFRE_VOL_VIDA"
+        string insurer "ej: MAPFRE"
+        string file_pattern
+        jsonb sheet_mapping
+        int header_row_index
+        jsonb column_mapping
+    }
+
+    RULE {
+        uuid id PK
+        uuid product_id FK
+        string code UK
+        string rule_type "age | date | range | ratio | duplicate | reference"
+        jsonb parameters
+        int priority
+    }
+
+    PROCESSED_FILE {
+        uuid id PK
+        uuid product_id FK
+        string original_filename
+        string status "RECIBIDO | PROCESADO | ERROR"
+        int total_records
+        int failed_records
+        jsonb error_report
+    }
+
+    RECORD {
+        uuid id PK
+        uuid file_id FK
+        int row_number
+        jsonb raw_data
+        string status "VALID | INVALID"
+        jsonb validation_errors
+    }
+
+    PRODUCT ||--o{ RULE : "tiene"
+    PRODUCT ||--o{ PROCESSED_FILE : "asociado a"
+    PROCESSED_FILE ||--o{ RECORD : "contiene"

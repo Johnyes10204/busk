@@ -1,0 +1,51 @@
+sequenceDiagram
+    participant ASG as Aseguradora (Mapfre/Bolívar)
+    participant FTP as FTP Server
+    participant W as FTP Watcher (Go)
+    participant RE as Rule Engine
+    participant DB as PostgreSQL
+    participant API as REST API
+
+    ASG->>FTP: 1. Sube archivo Anexo (ej. MAPFRE_VIDA_01.xlsx)
+    loop Monitoreo (Cron)
+        W->>FTP: 2. Escanea nuevos archivos
+        FTP-->>W: Retorna `MAPFRE_VIDA_01.xlsx`
+    end
+    
+    W->>DB: 3. Inserta FILE_TRACKING (Status: PENDING)
+    W->>RE: 4. Inicia Validación Síncrona (Estructura)
+    RE->>DB: Consulta Mapeo de Columnas (product_id)
+    
+    alt Estructura Inválida (Faltan Cols)
+        RE->>DB: 5a. Actualiza STATUS a ERROR
+        RE-->>W: Rechazo Inmediato
+    else Estructura Válida
+        RE->>DB: 5b. Inserta RAW Records
+        RE->>DB: Actualiza STATUS a PROCESSING
+        RE-->>W: Inicia Workers Asíncronos
+        
+        loop Por cada Registro (Row)
+            RE->>RE: 6. Aplica Regla (Edad, Plan, Tasa)
+            
+            alt Falla Regla (ej. Edad > 75)
+                RE->>DB: Marca RECORD como VÁLIDO=False (Con Alerta)
+            else Cumple Reglas
+                RE->>DB: Marca RECORD como VÁLIDO=True
+            end
+        end
+        
+        RE->>DB: 7. Reconciliación de Stock (Cruza vs Activos)
+        RE->>DB: Upsert persistente a tabla POLICY (Status: ACTIVE/FROZEN/CANCELLED)
+        RE->>DB: 8. Actualiza STATUS final: PROCESSED
+    end
+    
+    note right of API: El archivo ya está listo para consumo externo.
+    
+    ASG->>API: 9a. POST /api/v1/auth/login (Credentials)
+    API-->>ASG: JWT Access Token
+    
+    ASG->>API: 9b. GET /api/v1/stock/{id}/policies (Header: Bearer Token)
+    API->>API: 10. Auth Middleware Valida JWT
+    API->>DB: 11. Cliente consulta datos
+    DB-->>API: Retorna Data Unificada (JSON)
+    API-->>ASG: Respuesta 200 OK (Snake_Case)

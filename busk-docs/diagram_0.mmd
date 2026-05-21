@@ -1,0 +1,33 @@
+erDiagram
+    FILE_TRACKING ||--o{ RAW_RECORD : contains
+    RAW_RECORD ||--o{ POLICY : creates_or_updates
+    PRODUCT ||--o{ FILE_TRACKING : defines
+    PRODUCT ||--o{ RULE : has
+    PRODUCT ||--o{ POLICY : groups
+    
+    FILE_TRACKING {
+        uuid id PK
+        uuid product_id FK
+        string original_filename
+        string status "PENDING, PROCESSING, PROCESSED, ERROR"
+        jsonb validation_summary
+        timestamp received_at
+    }
+    
+    POLICY {
+        uuid id PK
+        uuid product_id FK
+        string document_number UK
+        string credit_id
+        string status "ACTIVE, CANCELLED, FROZEN"
+        numeric premium_value
+        jsonb validation_data
+    }
+    
+    RAW_RECORD {
+        uuid id PK
+        uuid file_id FK
+        boolean is_valid
+        jsonb raw_data
+        jsonb execution_log
+    }

@@ -1,0 +1,8 @@
+stateDiagram-v2
+    [*] --> PENDING: Archivo Detectado en FTP
+    PENDING --> PROCESSING: Pasa Validación Estructural
+    PENDING --> ERROR: Fallan Columnas/Estructura
+    PROCESSING --> PROCESSED: Finalizan Workers de Reglas
+    PROCESSING --> ERROR: Falla de Lote/Timeout
+    PROCESSED --> [*]
+    ERROR --> [*]

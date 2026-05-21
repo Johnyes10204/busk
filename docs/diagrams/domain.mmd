@@ -1,0 +1,19 @@
+stateDiagram-v2
+    [*] --> Recibido : Archivo depositado en /entrada
+    Recibido --> Identificado : Producto reconocido (Stock / Vida / Bolívar)
+    Recibido --> Rechazado : Producto NO reconocido
+    Identificado --> EnValidacion : Parseo de columnas exitoso
+    Identificado --> Rechazado : Error de estructura (Faltan columnas)
+
+    state EnValidacion {
+        [*] --> ReglaEdades
+        ReglaEdades --> ReglaPlanes
+        ReglaPlanes --> ReglaVigencias
+        ReglaVigencias --> CrucesStock
+    }
+
+    EnValidacion --> ProcesadoExitoso : Todas las reglas pasan ✅
+    EnValidacion --> Rechazado : Al menos 1 registro falla ❌
+
+    ProcesadoExitoso --> [*] : Se persiste y mueve a /procesados
+    Rechazado --> [*] : Se genera reporte de errores y mueve a /error

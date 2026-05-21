@@ -1,0 +1,9 @@
+flowchart TD
+    A([Aseguradora \n Sube pólizas])
+    B[(Servidor FTP)]
+    C{Busk Core Engine \n Procesa y Valida}
+    D([Portal Web / Broker])
+    
+    A -- Sube XLSX/CSV --> B
+    B -- Extrae archivos --> C
+    C -- Expone stock validado --> D

@@ -1,0 +1,8 @@
+- [Inicio](README.md)
+- [Arquitectura y Diagramas](architecture.md)
+- [Seguridad y Control de Acceso](security.md)
+- [Proceso FTP y Validación](ftp-val.md)
+- [Firmas de API](api.md)
+- [Esquema de Base de Datos](database.md)
+- [Catálogo de Productos (Anexos)](products.md)
+- [Lógica de Negocio](logic.md)

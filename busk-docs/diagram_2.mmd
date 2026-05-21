@@ -1,0 +1,14 @@
+stateDiagram-v2
+    [*] --> PROCESSING: Registro Extraído
+
+    PROCESSING --> ACTIVE: Pasa Reglas + Prima > 0
+    PROCESSING --> FROZEN: Pasa Reglas + Prima == 0
+    PROCESSING --> REJECTED: Falla Reglas (Edad/Plan)
+
+    ACTIVE --> CANCELLED: Ausente en nuevo archivo de Reconciliación
+    FROZEN --> CANCELLED: Ausente en nuevo archivo de Reconciliación
+    ACTIVE --> FROZEN: Prima cambia a 0 pesos en nuevo archivo
+    FROZEN --> ACTIVE: Prima recupera su valor > 0 en nuevo archivo
+    
+    CANCELLED --> [*]
+    REJECTED --> [*]
