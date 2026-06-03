@@ -10,6 +10,8 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
+const frozenInformativeNote = "La prima mensual es cero; la póliza se registra como congelada (no bloquea la carga del archivo)."
+
 // FileExportedRow replica una fila del archivo procesada más el texto de novedades.
 type FileExportedRow struct {
 	RowNumber    int               `json:"row_number"`
@@ -95,38 +97,41 @@ func collectSourceColumns(inputs []policyRowInput) []string {
 	return mergeSourceColumns(preferred, allKeys)
 }
 
-func notesForExportedRow(in policyRowInput) []string {
+func policyRowNotes(in policyRowInput) []string {
 	var notes []string
 	if strings.TrimSpace(in.ValidationJSON) != "" {
 		_ = json.Unmarshal([]byte(in.ValidationJSON), &notes)
 	}
-	blocking, info := validationnotes.Split(notes)
-	return append(blocking, info...)
+	return notes
 }
 
-func shouldExportMirrorRow(in policyRowInput, notes []string) bool {
-	if len(notes) > 0 {
+// shouldExportMirrorRow: hoja «Datos archivo» solo filas que fallaron la validación (incidencias o revisión manual).
+// No incluye congeladas ni filas con únicamente informes informativos.
+func shouldExportMirrorRow(in policyRowInput, blocking []string) bool {
+	if len(blocking) > 0 {
 		return true
 	}
 	return strings.EqualFold(strings.TrimSpace(in.PolicyStatus), "MANUAL_REVIEW")
 }
 
 func buildFileExportedRows(inputs []policyRowInput) (sourceCols []string, rows []FileExportedRow) {
-	sourceCols = collectSourceColumns(inputs)
 	rows = make([]FileExportedRow, 0)
+	failedInputs := make([]policyRowInput, 0)
 	for _, in := range inputs {
 		if strings.EqualFold(strings.TrimSpace(in.PolicyStatus), "CANCELLED") {
 			continue
 		}
-		notes := notesForExportedRow(in)
-		if !shouldExportMirrorRow(in, notes) {
+		notes := policyRowNotes(in)
+		blocking, _ := validationnotes.Split(notes)
+		if !shouldExportMirrorRow(in, blocking) {
 			continue
 		}
 		raw := parseRawDataMap(in.RawDataJSON)
-		novedades := formatNovedadesColumn(trimNotesPreserveAll(notes))
+		novedades := formatNovedadesColumn(trimNotesPreserveAll(blocking))
 		if strings.TrimSpace(novedades) == "" {
-			novedades = defaultPendingRowDetailMessage(in.PolicyStatus, len(notes) > 0)
+			novedades = defaultPendingRowDetailMessage(in.PolicyStatus, len(blocking) > 0)
 		}
+		failedInputs = append(failedInputs, in)
 		rows = append(rows, FileExportedRow{
 			RowNumber:    in.RowNumber,
 			PolicyStatus: strings.TrimSpace(in.PolicyStatus),
@@ -134,10 +139,70 @@ func buildFileExportedRows(inputs []policyRowInput) (sourceCols []string, rows [
 			Novedades:    novedades,
 		})
 	}
+	sourceCols = collectSourceColumns(failedInputs)
 	sort.Slice(rows, func(i, j int) bool {
 		return rows[i].RowNumber < rows[j].RowNumber
 	})
 	return sourceCols, rows
+}
+
+// buildFileExportedRowsEmail: filas para la única hoja del adjunto de correo.
+// Incluye cualquier fila con incidencias bloqueantes, revisión manual o avisos informativos.
+// Concatena en novedades primero las bloqueantes y luego las informativas.
+func buildFileExportedRowsEmail(inputs []policyRowInput) (sourceCols []string, rows []FileExportedRow) {
+	rows = make([]FileExportedRow, 0)
+	keptInputs := make([]policyRowInput, 0)
+	for _, in := range inputs {
+		st := strings.TrimSpace(in.PolicyStatus)
+		if strings.EqualFold(st, "CANCELLED") {
+			continue
+		}
+		notes := policyRowNotes(in)
+		blocking, info := validationnotes.Split(notes)
+		if strings.EqualFold(st, "FROZEN") && len(info) == 0 && len(blocking) == 0 {
+			info = []string{validationnotes.Informativo(frozenInformativeNote)}
+		}
+		if len(blocking) == 0 && len(info) == 0 && !strings.EqualFold(st, "MANUAL_REVIEW") {
+			continue
+		}
+		combined := trimNotesPreserveAll(append(append([]string{}, blocking...), info...))
+		novedades := formatNovedadesColumn(combined)
+		if strings.TrimSpace(novedades) == "" {
+			novedades = defaultPendingRowDetailMessage(in.PolicyStatus, len(combined) > 0)
+		}
+		keptInputs = append(keptInputs, in)
+		rows = append(rows, FileExportedRow{
+			RowNumber:    in.RowNumber,
+			PolicyStatus: st,
+			Data:         parseRawDataMap(in.RawDataJSON),
+			Novedades:    novedades,
+		})
+	}
+	sourceCols = collectSourceColumns(keptInputs)
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].RowNumber < rows[j].RowNumber
+	})
+	return sourceCols, rows
+}
+
+// validationReportEmailMirrorRows: misma estructura que la hoja "Datos archivo" pero con todas las filas afectadas
+// (bloqueantes + informativas + revisión manual).
+func validationReportEmailMirrorRows(r FileValidationReport) [][]string {
+	prefix := []string{"fila_excel", "estado_poliza"}
+	suffix := []string{"novedades"}
+	header := append(append(append([]string{}, prefix...), r.EmailSourceColumns...), suffix...)
+	out := [][]string{header}
+	for _, ex := range r.EmailExportedRows {
+		row := make([]string, len(header))
+		row[0] = strconv.Itoa(ex.RowNumber)
+		row[1] = etiquetaEstadoPolizaInforme(ex.PolicyStatus)
+		for i, col := range r.EmailSourceColumns {
+			row[2+i] = strings.TrimSpace(ex.Data[col])
+		}
+		row[len(header)-1] = ex.Novedades
+		out = append(out, row)
+	}
+	return out
 }
 
 // validationReportMirrorRows: columnas del archivo (orden del Excel) + fila, estado y novedades al final.

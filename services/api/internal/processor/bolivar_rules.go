@@ -3,6 +3,7 @@ package processor
 import (
 	"math"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -114,13 +115,19 @@ var bolivarMesesNombre = map[string]time.Month{
 	"NOVIEMBRE": time.November, "DICIEMBRE": time.December,
 }
 
-// bolivarMesFacturacionDesdeArchivo extrae mes/año de facturación del nombre (ej. MICRO_BANCO_ABRIL_VF → abril 2026).
+// bolivarMesFacturacionDesdeArchivo extrae el mes de cargue M del nombre (ej. MICRO_BANCO_MAYO → mayo/2026).
 func bolivarMesFacturacionDesdeArchivo(fileName string) (year int, month time.Month, ok bool) {
 	upper := strings.ToUpper(strings.TrimSpace(fileName))
+	names := make([]string, 0, len(bolivarMesesNombre))
+	for name := range bolivarMesesNombre {
+		names = append(names, name)
+	}
+	// Nombre más largo primero (evita ambigüedades entre etiquetas de mes).
+	sort.Slice(names, func(i, j int) bool { return len(names[i]) > len(names[j]) })
 	var m time.Month
-	for name, mo := range bolivarMesesNombre {
+	for _, name := range names {
 		if strings.Contains(upper, name) {
-			m = mo
+			m = bolivarMesesNombre[name]
 			break
 		}
 	}
@@ -144,8 +151,14 @@ func bolivarMesMinimoVencimiento(now time.Time, offsetMonths int) (year int, mon
 	return ref.Year(), ref.Month()
 }
 
-// bolivarMesReferenciaE10: mes de facturación del lote (ABRIL en el nombre del archivo), no el mes calendario de carga (MAYO).
-// En mayo se sube el archivo de abril → referencia = abril. Solo si el nombre no trae mes, se usa mes vencido (now-1).
+// bolivarMesCargueDelLote (E.10): mes M del nombre del archivo = mes de cargue del lote.
+// Regla para todo M: informar vencimientos con mes/año estrictamente anterior a M
+// (mes M-1 hacia atrás: mayo→abril↓, abril→marzo↓, junio→mayo↓, …).
+func bolivarMesCargueDelLote(values map[string]string, cfg ruleRuntimeConfig, now time.Time) (year int, month time.Month) {
+	return bolivarMesReferenciaE10(values, cfg, now)
+}
+
+// bolivarMesReferenciaE10: alias histórico → bolivarMesCargueDelLote.
 func bolivarMesReferenciaE10(values map[string]string, cfg ruleRuntimeConfig, now time.Time) (year int, month time.Month) {
 	if fn := strings.TrimSpace(values["_file_name"]); fn != "" {
 		if y, m, ok := bolivarMesFacturacionDesdeArchivo(fn); ok {
@@ -166,35 +179,40 @@ func bolivarAplicaIncidenciaEdadFueraRango(values map[string]string, cfg ruleRun
 	return deuda > umbral
 }
 
-func bolivarVencimientoAntesMesMinimo(due time.Time, minYear int, minMonth time.Month) bool {
-	if due.IsZero() {
+// bolivarVencimientoAntesMesCargue: vencimiento estrictamente anterior al mes de cargue M del archivo.
+// Mayo→abril y anteriores; abril→marzo y anteriores; junio→mayo y anteriores; etc.
+func bolivarVencimientoAntesMesCargue(due time.Time, cargueYear int, cargueMonth time.Month) bool {
+	if due.IsZero() || cargueMonth == 0 {
 		return false
 	}
-	if due.Year() < minYear {
+	if due.Year() < cargueYear {
 		return true
 	}
-	return due.Year() == minYear && due.Month() < minMonth
+	return due.Year() == cargueYear && due.Month() < cargueMonth
 }
 
-// bolivarEvaluarVencimientoInferiorPrima: si el vencimiento es anterior al mes de facturación del archivo,
-// prima > 0 → incidencia (revisar prima); prima = 0 → nota informativa (cancelación en processor, sin importar la fecha).
+func bolivarMesAnteriorInmediato(year int, month time.Month) (int, time.Month) {
+	if month == 0 {
+		return year, 0
+	}
+	t := time.Date(year, month, 1, 0, 0, 0, 0, time.UTC).AddDate(0, -1, 0)
+	return t.Year(), t.Month()
+}
+
+// bolivarEvaluarVencimientoInferiorPrima (E.10 operativo): mes de cargue = mes del nombre del archivo (ABRIL).
+// Vencimiento en el mes inmediatamente anterior (marzo) o antes → aviso en informe; no bloquea la carga.
 func bolivarEvaluarVencimientoInferiorPrima(
 	values map[string]string,
 	parsed map[string]bolivarFechaParse,
-	minYear int,
-	minMonth time.Month,
+	cargueYear int,
+	cargueMonth time.Month,
 ) (hardViolations []string, softNotes []string) {
 	due := bolivarFechaDesdeParseMap(parsed, "loan_due_date_current")
-	if due.IsZero() || !bolivarVencimientoAntesMesMinimo(due, minYear, minMonth) {
+	if due.IsZero() || !bolivarVencimientoAntesMesCargue(due, cargueYear, cargueMonth) {
 		return nil, nil
 	}
 	prima, _ := parseFlexibleNumber(values["monthly_premium"])
-	if prima == 0 {
-		// Cancelación por prima 0 la marca processor; no nota en informe solo por vencimiento.
-		return nil, nil
-	}
-	// E.10 operativo: aviso en hoja «Informes» del Excel; no bloquea la importación de pólizas.
-	softNotes = append(softNotes, mensajeBolivarRevisarPrimaVencimientoInferior(values, due, minYear, minMonth, prima))
+	softNotes = append(softNotes, mensajeBolivarVencimientoMesAnteriorAlCargue(values, due, cargueYear, cargueMonth, prima))
 	return nil, softNotes
 }
 
@@ -207,13 +225,14 @@ func applyBolivarDiagramRules(
 ) (hardViolations []string, softNotes []string) {
 	layouts := cfg.DateLayouts
 
-	fechaHards, parsed := bolivarValidarFechasCreditoInclusion(values, layouts)
+	fechaHards, fechaSoft, parsed := bolivarValidarFechasCreditoInclusion(values, layouts)
 	hardViolations = append(hardViolations, fechaHards...)
+	softNotes = append(softNotes, fechaSoft...)
 
 	now := time.Now().UTC()
 	minYear, minMonth := bolivarMesReferenciaE10(values, cfg, now)
 
-	// E.10 operativo: vencimiento anterior al mes de facturación → revisar prima; prima 0 → cancelación (processor), sin incidencia por fecha.
+	// E.10 operativo: vencimiento en mes anterior al cargue (marzo hacia atrás si el lote es abril).
 	if cfg.BolivarValidateDueMonth {
 		vh, vs := bolivarEvaluarVencimientoInferiorPrima(values, parsed, minYear, minMonth)
 		hardViolations = append(hardViolations, vh...)

@@ -118,9 +118,9 @@ func (s *Service) startWorker() {
 							ProcessedAt: rec.ProcessedAt,
 						})
 						if err != nil {
-							log.Printf("[notify] fallo envio correo sendgrid file_id=%s err=%v", rec.ID, err)
+							log.Printf("[notify] fallo envio correo (revisar adjunto/SendGrid) file_id=%s err=%v", rec.ID, err)
 						} else {
-							log.Printf("[notify] correo de error enviado file_id=%s", rec.ID)
+							log.Printf("[notify] correo de error enviado con adjunto file_id=%s", rec.ID)
 						}
 					}
 					finalErr := rec.ErrorReason
@@ -654,6 +654,7 @@ func validateFile(r io.Reader, fileID, fileName string, candidates []model.Produ
 		} else if frozen {
 			frozenCount++
 			status = "FROZEN"
+			notes = append(notes, noteInformativo(mensajePolizaCongeladaPrimaCero()))
 		}
 		// Si la prima es 0 y el producto no define política de congelamiento,
 		// la póliza debe cancelarse.
@@ -1144,25 +1145,10 @@ func applyDiagramRules(
 	if cfg.HasAgeLimits {
 		mapfreSheet := strings.HasPrefix(code, "MAPFRE")
 		det := evaluarEdadDetalle(values, cfg, mapfreSheet, code)
-		switch {
-		case strings.TrimSpace(det.birthRaw) == "":
-			hardViolations = append(hardViolations, mensajeFechaNacimientoObligatoriaParaEdad())
-		case det.activacionRaw == "":
-			if strings.HasPrefix(code, "BOLIVAR") {
-				hardViolations = append(hardViolations, mensajeFechaActivacionObligatoriaBolivar())
-			} else {
-				hardViolations = append(hardViolations, mensajeFechaActivacionObligatoriaParaEdad())
-			}
-		case !det.refValid:
-			hardViolations = append(hardViolations, mensajeFechaActivacionNoCalculable(det.activacionRaw, cfg.DateLayouts, mapfreSheet, code))
-		case !fechaNacimientoParseable(det.birthRaw, cfg.DateLayouts, mapfreSheet):
-			hardViolations = append(hardViolations, mensajeEdadNoCalculable(det.birthRaw))
-		case !det.cumple:
-			if strings.HasPrefix(code, "BOLIVAR") && !bolivarAplicaIncidenciaEdadFueraRango(values, cfg) {
-				// E.8: deuda ≤ umbral → no incidencia por edad; la póliza puede importarse.
-			} else {
-				hardViolations = append(hardViolations, mensajeEdadFueraDeRango(code, det, cfg.AgeMin, cfg.AgeMax, ageDaysBeforeTopBirthday(cfg.AgeMaxDaysBeforeBirthday)))
-			}
+		if strings.HasPrefix(code, "BOLIVAR") {
+			hardViolations = append(hardViolations, bolivarViolacionesEdad(values, cfg, det)...)
+		} else {
+			hardViolations = append(hardViolations, violacionesEdadGenerico(code, cfg, det, mapfreSheet)...)
 		}
 	}
 
@@ -1267,6 +1253,78 @@ func dateParsedWithOrder(raw string, layouts []string, order dateFieldOrder) boo
 
 func fechaNacimientoParseable(raw string, layouts []string, mapfreSheet bool) bool {
 	return !parseBirthDate(raw, layouts, mapfreSheet).IsZero()
+}
+
+func fechaNacimientoParseableProducto(productCode, raw string, layouts []string, mapfreSheet bool) bool {
+	if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(productCode)), "BOLIVAR") {
+		return fechaNacimientoParseableBolivar(raw, layouts)
+	}
+	return fechaNacimientoParseable(raw, layouts, mapfreSheet)
+}
+
+func fechaNacimientoParseableBolivar(raw string, layouts []string) bool {
+	return len(bolivarBirthDateLecturas(raw, layouts)) > 0
+}
+
+// bolivarBirthDateLecturas reúne lecturas distintas de nacimiento (DMY, MDY y día>12).
+func bolivarBirthDateLecturas(raw string, layouts []string) []time.Time {
+	out := make([]time.Time, 0, 3)
+	add := func(t time.Time) {
+		if t.IsZero() {
+			return
+		}
+		for _, x := range out {
+			if sameCalendarDay(x, t) {
+				return
+			}
+		}
+		out = append(out, t)
+	}
+	dmy, mdy := parseBirthDateOrders(raw, layouts, false)
+	add(dmy)
+	add(mdy)
+	add(parseBirthDateDMYDayGreaterThan12(raw))
+	return out
+}
+
+// edadCumpleRangoBolivarDual: si alguna lectura de nacimiento cumple el rango, la póliza es válida (sin novedad de edad).
+func edadCumpleRangoBolivarDual(
+	birthRaw string,
+	layouts []string,
+	ref time.Time,
+	ageMin, ageMax float64,
+	diasAntesMax int,
+) (cumple bool, edadReportada int) {
+	minYears := ageLimitMinInt(ageMin)
+	maxBirthdayYear := ageLimitMaxBirthdayYear(ageMax)
+	type lectura struct {
+		birth time.Time
+		age   int
+	}
+	var lecturas []lectura
+	for _, b := range bolivarBirthDateLecturas(birthRaw, layouts) {
+		lecturas = append(lecturas, lectura{birth: b, age: completedYearsBetween(b, ref)})
+	}
+	if len(lecturas) == 0 {
+		return false, -1
+	}
+	edadPeor := lecturas[0].age
+	mejorEdad := -1
+	for _, l := range lecturas {
+		if l.age > edadPeor {
+			edadPeor = l.age
+		}
+		if !edadEnRangoCalendario(l.birth, ref, minYears, maxBirthdayYear, diasAntesMax) {
+			continue
+		}
+		if mejorEdad < 0 || l.age < mejorEdad {
+			mejorEdad = l.age
+		}
+	}
+	if mejorEdad >= 0 {
+		return true, mejorEdad
+	}
+	return false, edadPeor
 }
 
 // mapfreInicioVigenciaEnMesTrabajo valida vigencia (independiente de la regla de edad).
@@ -1482,14 +1540,59 @@ func evaluarEdadDetalle(values map[string]string, cfg ruleRuntimeConfig, mapfreS
 		refEtiqueta:   "fecha de activación",
 		refValorArchivo: activacionRaw,
 	}
-	d.nacimientoDMY, d.nacimientoMDY = parseBirthDateOrders(birthRaw, layouts, mapfreSheet)
-	d.edadDMY = completedYearsBetween(d.nacimientoDMY, ref)
-	d.edadMDY = completedYearsBetween(d.nacimientoMDY, ref)
 	diasAntesEdad := ageDaysBeforeTopBirthday(cfg.AgeMaxDaysBeforeBirthday)
-	d.cumple, d.edadReportada = edadCumpleRangoEstricto(birthRaw, layouts, ref, cfg.AgeMin, cfg.AgeMax, diasAntesEdad, mapfreSheet)
+	if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(productCode)), "BOLIVAR") {
+		d.nacimientoDMY, d.nacimientoMDY = parseBirthDateOrders(birthRaw, layouts, false)
+		d.edadDMY = completedYearsBetween(d.nacimientoDMY, ref)
+		d.edadMDY = completedYearsBetween(d.nacimientoMDY, ref)
+		d.cumple, d.edadReportada = edadCumpleRangoBolivarDual(birthRaw, layouts, ref, cfg.AgeMin, cfg.AgeMax, diasAntesEdad)
+	} else {
+		d.nacimientoDMY, d.nacimientoMDY = parseBirthDateOrders(birthRaw, layouts, mapfreSheet)
+		d.edadDMY = completedYearsBetween(d.nacimientoDMY, ref)
+		d.edadMDY = completedYearsBetween(d.nacimientoMDY, ref)
+		d.cumple, d.edadReportada = edadCumpleRangoEstricto(birthRaw, layouts, ref, cfg.AgeMin, cfg.AgeMax, diasAntesEdad, mapfreSheet)
+		d.fechaLimiteMaxDMY = fechaLimiteMaxEdad(d.nacimientoDMY, cfg.AgeMax, diasAntesEdad)
+		d.fechaLimiteMaxMDY = fechaLimiteMaxEdad(d.nacimientoMDY, cfg.AgeMax, diasAntesEdad)
+		return d
+	}
 	d.fechaLimiteMaxDMY = fechaLimiteMaxEdad(d.nacimientoDMY, cfg.AgeMax, diasAntesEdad)
 	d.fechaLimiteMaxMDY = fechaLimiteMaxEdad(d.nacimientoMDY, cfg.AgeMax, diasAntesEdad)
 	return d
+}
+
+// bolivarViolacionesEdad: si alguna lectura DMY/MDY cumple, no se agrega novedad de edad (póliza válida).
+func bolivarViolacionesEdad(values map[string]string, cfg ruleRuntimeConfig, det edadValidacionDetalle) []string {
+	var out []string
+	switch {
+	case strings.TrimSpace(det.birthRaw) == "":
+		out = append(out, mensajeFechaNacimientoObligatoriaParaEdad())
+	case det.activacionRaw == "":
+		out = append(out, mensajeFechaActivacionObligatoriaBolivar())
+	case !det.refValid:
+		out = append(out, mensajeFechaActivacionNoCalculable(det.activacionRaw, cfg.DateLayouts, false, "BOLIVAR"))
+	case !fechaNacimientoParseableBolivar(det.birthRaw, cfg.DateLayouts):
+		out = append(out, mensajeEdadNoCalculable(det.birthRaw))
+	case !det.cumple && bolivarAplicaIncidenciaEdadFueraRango(values, cfg):
+		out = append(out, mensajeEdadFueraDeRango("BOLIVAR", det, cfg.AgeMin, cfg.AgeMax, ageDaysBeforeTopBirthday(cfg.AgeMaxDaysBeforeBirthday)))
+	}
+	return out
+}
+
+func violacionesEdadGenerico(code string, cfg ruleRuntimeConfig, det edadValidacionDetalle, mapfreSheet bool) []string {
+	var out []string
+	switch {
+	case strings.TrimSpace(det.birthRaw) == "":
+		out = append(out, mensajeFechaNacimientoObligatoriaParaEdad())
+	case det.activacionRaw == "":
+		out = append(out, mensajeFechaActivacionObligatoriaParaEdad())
+	case !det.refValid:
+		out = append(out, mensajeFechaActivacionNoCalculable(det.activacionRaw, cfg.DateLayouts, mapfreSheet, code))
+	case !fechaNacimientoParseable(det.birthRaw, cfg.DateLayouts, mapfreSheet):
+		out = append(out, mensajeEdadNoCalculable(det.birthRaw))
+	case !det.cumple:
+		out = append(out, mensajeEdadFueraDeRango(code, det, cfg.AgeMin, cfg.AgeMax, ageDaysBeforeTopBirthday(cfg.AgeMaxDaysBeforeBirthday)))
+	}
+	return out
 }
 
 func formatFechaCalendario(t time.Time) string {

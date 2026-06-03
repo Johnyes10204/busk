@@ -30,8 +30,8 @@ func bolivarFechaNumericaAmbigua(raw string) bool {
 	return a <= 12 && b <= 12
 }
 
-// parseBolivarFechaInclusion interpreta fechas de inclusiones Bolívar (archivos tipo MICRO_BANCO).
-// Convención: mes/día/año (MDY) como en Excel US; si día/mes y mes/día difieren se usa MDY sin nota en el informe.
+// parseBolivarFechaInclusion interpreta fechas de vigencia/crédito en inclusiones Bolívar (MICRO_BANCO).
+// El Excel exporta con guiones en mes/día/año (p. ej. 01-20-22, 05-15-26). En ambigüedad se usa MDY y se informa si DMY difiere.
 func parseBolivarFechaInclusion(raw string, layouts []string) bolivarFechaParse {
 	raw = strings.TrimSpace(raw)
 	out := bolivarFechaParse{Raw: raw}
@@ -55,10 +55,7 @@ func parseBolivarFechaInclusion(raw string, layouts []string) bolivarFechaParse 
 	out.MDY = parseDateFieldOrder(raw, layouts, dateOrderMDY, dateYearContextVigencia)
 	if !out.DMY.IsZero() && !out.MDY.IsZero() && !sameCalendarDay(out.DMY, out.MDY) {
 		out.Ambiguo = true
-		// Inclusiones Bolívar (MICRO_BANCO): convención mes/día/año; se registra nota con ambas lecturas.
-		if !out.MDY.IsZero() {
-			out.Fecha = out.MDY
-		}
+		out.Fecha = out.MDY
 		return out
 	}
 	if !out.MDY.IsZero() {
@@ -71,20 +68,39 @@ func parseBolivarFechaInclusion(raw string, layouts []string) bolivarFechaParse 
 	return out
 }
 
+// bolivarVigenciaFecha misma lectura que E.2/E.10 (adjudicación, vencimiento, activación).
+func bolivarVigenciaFecha(raw string, layouts []string) time.Time {
+	return parseBolivarFechaInclusion(raw, layouts).Fecha
+}
+
 func bolivarValidarFechasCreditoInclusion(
 	values map[string]string,
 	layouts []string,
-) (hard []string, parsed map[string]bolivarFechaParse) {
+) (hard, soft []string, parsed map[string]bolivarFechaParse) {
 	parsed = make(map[string]bolivarFechaParse)
-	checks := []struct {
+
+	// activation_date es fallback de loan_award_date: solo se valida y reporta si loan_award_date está vacío.
+	adjRaw := strings.TrimSpace(values["loan_award_date"])
+	actRaw := strings.TrimSpace(values["activation_date"])
+
+	type check struct {
 		canon string
 		raw   string
 		store string
-	}{
-		{"loan_award_date", strings.TrimSpace(values["loan_award_date"]), "loan_award_date"},
-		{"loan_award_date", strings.TrimSpace(values["activation_date"]), "activation_date"},
+	}
+	checks := []check{
 		{"loan_due_date_current", strings.TrimSpace(values["loan_due_date_current"]), "loan_due_date_current"},
 	}
+	if adjRaw != "" {
+		checks = append([]check{{"loan_award_date", adjRaw, "loan_award_date"}}, checks...)
+		if actRaw != "" {
+			p := parseBolivarFechaInclusion(actRaw, layouts)
+			parsed["activation_date"] = p
+		}
+	} else if actRaw != "" {
+		checks = append([]check{{"loan_award_date", actRaw, "activation_date"}}, checks...)
+	}
+
 	for _, c := range checks {
 		if c.raw == "" {
 			continue
@@ -97,7 +113,7 @@ func bolivarValidarFechasCreditoInclusion(
 			hard = append(hard, mensajeFechaBolivarInvalida(values, c.canon))
 		}
 	}
-	return hard, parsed
+	return hard, soft, parsed
 }
 
 func bolivarFechaDesdeParseMap(parsed map[string]bolivarFechaParse, keys ...string) time.Time {

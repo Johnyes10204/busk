@@ -1,12 +1,14 @@
 package notify
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"html/template"
 	"log"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -14,6 +16,11 @@ import (
 	"github.com/buskseguros-design/services/api/internal/store"
 	"github.com/sendgrid/sendgrid-go"
 	sgmail "github.com/sendgrid/sendgrid-go/helpers/mail"
+)
+
+const (
+	maxEmailAttachmentBytes = 28 << 20 // SendGrid admite ~30 MiB
+	emailZipPreferMinBytes  = 2 << 20 // archivos grandes: intentar ZIP primero (evita 413 de nginx)
 )
 
 type ErrorEmailInput struct {
@@ -62,17 +69,25 @@ func (n *sendGridNotifier) NotifyFileProcessingError(input ErrorEmailInput) erro
 
 	var xlsxBytes []byte
 	if report, ok := parseValidationReport(input.ValidationReportJSON); ok {
-		b, err := store.ValidationReportClientXLSX(report)
+		b, err := store.ValidationReportEmailXLSX(report)
 		if err != nil {
-			log.Printf("[notify] no se pudo generar Excel de novedades file_id=%s err=%v", input.FileID, err)
+			log.Printf("[notify] no se pudo generar Excel de novedades (correo) file_id=%s err=%v", input.FileID, err)
 		} else if len(b) > 0 {
 			xlsxBytes = b
 		}
 	}
-	canAttach := len(xlsxBytes) > 0
+	if len(xlsxBytes) == 0 {
+		b, err := store.ValidationReportXLSXForErrorEmail(input.FileName, input.FileID, input.ProductID, input.ErrorReason)
+		if err != nil {
+			log.Printf("[notify] no se pudo generar Excel resumen file_id=%s err=%v", input.FileID, err)
+		} else {
+			xlsxBytes = b
+		}
+	}
+	downloadURL := validationReportDownloadURL(input.FileID)
 
-	send := func(attach bool, bodyMentionsReport bool) (statusCode int, body string, err error) {
-		msg := n.composeErrorMail(input, attach, bodyMentionsReport, xlsxBytes)
+	send := func(attach *emailAttachment, bodyMentionsReport bool) (statusCode int, body string, err error) {
+		msg := n.composeErrorMail(input, attach, bodyMentionsReport, downloadURL)
 		r, e := client.Send(msg)
 		if e != nil {
 			return 0, "", e
@@ -80,31 +95,134 @@ func (n *sendGridNotifier) NotifyFileProcessingError(input ErrorEmailInput) erro
 		return r.StatusCode, r.Body, nil
 	}
 
-	status, body, err := send(canAttach, canAttach)
-	if err != nil {
-		return err
+	tryAttach := func(att emailAttachment, label string) (ok bool, status int, body string, err error) {
+		if len(att.data) == 0 {
+			return false, 0, "", nil
+		}
+		if len(att.data) > maxEmailAttachmentBytes {
+			log.Printf("[notify] adjunto %s demasiado grande file_id=%s bytes=%d max=%d", label, input.FileID, len(att.data), maxEmailAttachmentBytes)
+			return false, 0, "", nil
+		}
+		st, b, e := send(&att, true)
+		if e != nil {
+			return false, st, b, e
+		}
+		if st >= 200 && st < 300 {
+			log.Printf("[notify] sendgrid aceptó adjunto %s file_id=%s status=%d bytes=%d destinatarios=%d",
+				label, input.FileID, st, len(att.data), len(n.recipients))
+			return true, st, b, nil
+		}
+		return false, st, b, nil
 	}
-	if status >= 200 && status < 300 {
+
+	if len(xlsxBytes) > 0 {
+		for _, att := range emailAttachmentCandidates(input.FileName, input.FileID, xlsxBytes) {
+			label := "xlsx"
+			if strings.HasSuffix(strings.ToLower(att.filename), ".zip") {
+				label = "zip"
+			}
+			ok, st, body, err := tryAttach(att, label)
+			if err != nil {
+				return err
+			}
+			if ok {
+				return nil
+			}
+			if st == 413 {
+				log.Printf("[notify] sendgrid 413 con %s; siguiente formato file_id=%s body=%s",
+					label, input.FileID, truncateForLog(body, 400))
+				continue
+			}
+			if st != 0 {
+				log.Printf("[notify] sendgrid rechazó %s file_id=%s status=%d body=%s",
+					label, input.FileID, st, truncateForLog(body, 1800))
+			}
+		}
+	}
+
+	if len(xlsxBytes) > 0 {
+		log.Printf("[notify] ADVERTENCIA: no se pudo adjuntar Excel file_id=%s bytes=%d; reintento correo sin adjunto", input.FileID, len(xlsxBytes))
+	}
+
+	log.Printf("[notify] reintentando sin adjunto file_id=%s", input.FileID)
+	status2, body2, err2 := send(nil, len(xlsxBytes) > 0)
+	if err2 != nil {
+		return err2
+	}
+	if status2 >= 200 && status2 < 300 {
+		if len(xlsxBytes) > 0 {
+			if downloadURL != "" {
+				log.Printf("[notify] correo enviado SIN adjunto (descargue: %s) file_id=%s", downloadURL, input.FileID)
+			} else {
+				log.Printf("[notify] correo enviado SIN adjunto (configure API_PUBLIC_BASE_URL) file_id=%s", input.FileID)
+			}
+		} else {
+			log.Printf("[notify] correo enviado sin adjunto file_id=%s", input.FileID)
+		}
 		return nil
 	}
+	return fmt.Errorf("sendgrid (reintento sin adjunto) status=%d body=%s", status2, strings.TrimSpace(truncateForLog(body2, 1800)))
+}
 
-	firstBody := truncateForLog(body, 1800)
-	log.Printf("[notify] sendgrid rechazó envío file_id=%s status=%d body=%s", input.FileID, status, firstBody)
-
-	if canAttach {
-		log.Printf("[notify] reintentando sin adjunto Excel file_id=%s", input.FileID)
-		status2, body2, err2 := send(false, false)
-		if err2 != nil {
-			return err2
-		}
-		if status2 >= 200 && status2 < 300 {
-			log.Printf("[notify] correo enviado sin adjunto (Excel disponible por API /api/v1/files/validation-xlsx) file_id=%s", input.FileID)
-			return nil
-		}
-		return fmt.Errorf("sendgrid (reintento sin adjunto) status=%d body=%s", status2, strings.TrimSpace(truncateForLog(body2, 1800)))
+// emailAttachmentCandidates ordena .xlsx y .zip; ZIP primero si el libro supera emailZipPreferMinBytes.
+func emailAttachmentCandidates(fileName, fileID string, xlsxBytes []byte) []emailAttachment {
+	xlsxName := validationReportAttachmentFilename(fileName, fileID, ".xlsx")
+	xlsxAtt := emailAttachment{
+		data:     xlsxBytes,
+		filename: xlsxName,
+		mime:     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 	}
+	out := []emailAttachment{xlsxAtt}
+	zipBytes, zipName, err := zipEmailAttachment(xlsxName, xlsxBytes)
+	if err != nil || len(zipBytes) == 0 {
+		return out
+	}
+	zipAtt := emailAttachment{data: zipBytes, filename: zipName, mime: "application/zip"}
+	if len(xlsxBytes) >= emailZipPreferMinBytes {
+		return []emailAttachment{zipAtt, xlsxAtt}
+	}
+	return []emailAttachment{xlsxAtt, zipAtt}
+}
 
-	return fmt.Errorf("sendgrid status=%d body=%s", status, strings.TrimSpace(firstBody))
+type emailAttachment struct {
+	data     []byte
+	filename string
+	mime     string
+}
+
+func zipEmailAttachment(innerName string, data []byte) ([]byte, string, error) {
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+	f, err := w.Create(innerName)
+	if err != nil {
+		return nil, "", err
+	}
+	if _, err := f.Write(data); err != nil {
+		return nil, "", err
+	}
+	if err := w.Close(); err != nil {
+		return nil, "", err
+	}
+	zipName := strings.TrimSuffix(innerName, ".xlsx") + ".zip"
+	if !strings.HasSuffix(zipName, ".zip") {
+		zipName = innerName + ".zip"
+	}
+	return buf.Bytes(), zipName, nil
+}
+
+func validationReportDownloadURL(fileID string) string {
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" {
+		return ""
+	}
+	base := strings.TrimRight(strings.TrimSpace(os.Getenv("API_PUBLIC_BASE_URL")), "/")
+	if base == "" {
+		base = strings.TrimRight(strings.TrimSpace(os.Getenv("BUSK_PUBLIC_API_URL")), "/")
+	}
+	if base == "" {
+		return ""
+	}
+	return base + "/api/v1/files/validation-xlsx?file_id=" + url.QueryEscape(fileID)
 }
 
 func truncateForLog(s string, max int) string {
@@ -115,7 +233,7 @@ func truncateForLog(s string, max int) string {
 	return s[:max] + "…"
 }
 
-func (n *sendGridNotifier) composeErrorMail(input ErrorEmailInput, attachXLSX, bodyMentionsReport bool, xlsxBytes []byte) *sgmail.SGMailV3 {
+func (n *sendGridNotifier) composeErrorMail(input ErrorEmailInput, attach *emailAttachment, bodyMentionsReport bool, downloadURL string) *sgmail.SGMailV3 {
 	from := sgmail.NewEmail("Busk Seguros", n.from)
 	subject := fmt.Sprintf("[Busk Seguros] Novedades en archivo %s", strings.TrimSpace(input.FileName))
 
@@ -128,17 +246,18 @@ func (n *sendGridNotifier) composeErrorMail(input ErrorEmailInput, attachXLSX, b
 	}
 	message.AddPersonalizations(p)
 
-	if attachXLSX && len(xlsxBytes) > 0 {
+	if attach != nil && len(attach.data) > 0 {
 		att := sgmail.NewAttachment()
-		att.SetContent(base64.StdEncoding.EncodeToString(xlsxBytes))
-		att.SetType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-		att.SetFilename(validationReportAttachmentFilename(input.FileName, input.FileID, ".xlsx"))
+		att.SetContent(base64.StdEncoding.EncodeToString(attach.data))
+		att.SetType(attach.mime)
+		att.SetFilename(attach.filename)
 		att.SetDisposition("attachment")
 		message.AddAttachment(att)
 	}
 
-	plainText := buildPlainBody(input, bodyMentionsReport)
-	htmlBody := buildHTMLBody(input, bodyMentionsReport)
+	adjunto := attach != nil && len(attach.data) > 0
+	plainText := buildPlainBody(input, adjunto, bodyMentionsReport, downloadURL)
+	htmlBody := buildHTMLBody(input, adjunto, bodyMentionsReport, downloadURL)
 	message.AddContent(sgmail.NewContent("text/plain", plainText))
 	message.AddContent(sgmail.NewContent("text/html", htmlBody))
 	return message
@@ -157,19 +276,21 @@ type reportEmailData struct {
 	FilasDuplicadas         int
 	TieneInforme            bool
 	AdjuntoExcel            bool
+	DescargaInformeURL    string
 	DetalleCarga            string
 }
 
-func buildReportEmailData(input ErrorEmailInput, adjuntoExcel bool) reportEmailData {
+func buildReportEmailData(input ErrorEmailInput, adjuntoExcel bool, downloadURL string) reportEmailData {
 	data := reportEmailData{
-		FileName:         strings.TrimSpace(input.FileName),
-		ProductID:        emptyFallback(input.ProductID, "No identificado"),
-		Estado:           etiquetaEstadoArchivo(input.Status),
-		ProcesadoEn:      "No disponible",
-		ResumenOperacion: "El archivo no pudo completar el procesamiento automático.",
-		MensajePrincipal: "Se registró un error durante el procesamiento. Revise el detalle indicado más abajo.",
-		AdjuntoExcel:     adjuntoExcel,
-		DetalleCarga:     strings.TrimSpace(input.ErrorReason),
+		FileName:           strings.TrimSpace(input.FileName),
+		ProductID:          emptyFallback(input.ProductID, "No identificado"),
+		Estado:             etiquetaEstadoArchivo(input.Status),
+		ProcesadoEn:        "No disponible",
+		ResumenOperacion:   "El archivo no pudo completar el procesamiento automático.",
+		MensajePrincipal:   "Se registró un error durante el procesamiento. Revise el detalle indicado más abajo.",
+		AdjuntoExcel:       adjuntoExcel,
+		DescargaInformeURL: strings.TrimSpace(downloadURL),
+		DetalleCarga:       strings.TrimSpace(input.ErrorReason),
 	}
 	if data.DetalleCarga == "" {
 		data.DetalleCarga = "Sin detalle adicional en el sistema."
@@ -223,8 +344,8 @@ func etiquetaEstadoArchivo(status string) string {
 	}
 }
 
-func buildPlainBody(input ErrorEmailInput, adjuntoExcel bool) string {
-	d := buildReportEmailData(input, adjuntoExcel)
+func buildPlainBody(input ErrorEmailInput, adjuntoExcel, tieneInforme bool, downloadURL string) string {
+	d := buildReportEmailData(input, adjuntoExcel, downloadURL)
 	var b strings.Builder
 	b.WriteString("Busk Seguros — Informe de procesamiento de archivo\n")
 	b.WriteString(strings.Repeat("=", 48) + "\n\n")
@@ -246,22 +367,26 @@ func buildPlainBody(input ErrorEmailInput, adjuntoExcel bool) string {
 	}
 	b.WriteString("Detalle del sistema:\n" + d.DetalleCarga + "\n\n")
 	if adjuntoExcel {
-		b.WriteString("Adjunto: Excel «novedades» con el detalle fila a fila (columna detalle_novedad).\n")
-		b.WriteString("Abra el archivo adjunto para ver cada validación en lenguaje de negocio.\n\n")
+		b.WriteString("Adjunto: Excel (.xlsx o .zip) con hojas Incidencias e Informes.\n\n")
+	} else if tieneInforme && d.DescargaInformeURL != "" {
+		b.WriteString("El adjunto no pudo enviarse por tamaño. Descargue el informe Excel aquí:\n")
+		b.WriteString(d.DescargaInformeURL + "\n\n")
+	} else if tieneInforme {
+		b.WriteString("El adjunto no pudo enviarse. Solicite el Excel al equipo técnico con file_id=" + strings.TrimSpace(input.FileID) + ".\n\n")
 	}
 	b.WriteString("— Busk Seguros · Procesamiento automático de inclusiones\n")
 	return strings.TrimSpace(b.String())
 }
 
-func buildHTMLBody(input ErrorEmailInput, adjuntoExcel bool) string {
-	data := buildReportEmailData(input, adjuntoExcel)
+func buildHTMLBody(input ErrorEmailInput, adjuntoExcel, tieneInforme bool, downloadURL string) string {
+	data := buildReportEmailData(input, adjuntoExcel, downloadURL)
 	tpl, err := template.New("error-email").Parse(errorEmailTemplate)
 	if err != nil {
-		return strings.ReplaceAll(buildPlainBody(input, adjuntoExcel), "\n", "<br>")
+		return strings.ReplaceAll(buildPlainBody(input, adjuntoExcel, tieneInforme, downloadURL), "\n", "<br>")
 	}
 	var b bytes.Buffer
 	if err := tpl.Execute(&b, data); err != nil {
-		return strings.ReplaceAll(buildPlainBody(input, adjuntoExcel), "\n", "<br>")
+		return strings.ReplaceAll(buildPlainBody(input, adjuntoExcel, tieneInforme, downloadURL), "\n", "<br>")
 	}
 	return b.String()
 }
@@ -352,7 +477,9 @@ const errorEmailTemplate = `
             <div style="background:#fff8e6;border-left:4px solid #e6a800;padding:14px 16px;margin-bottom:24px;border-radius:0 4px 4px 0;">
               <p style="margin:0;font-size:14px;line-height:1.5;color:#5c4a00;">
                 {{if .AdjuntoExcel}}
-                <strong>Acción requerida:</strong> revise el archivo Excel adjunto con el detalle de cada novedad (una fila por línea del archivo origen).
+                <strong>Acción requerida:</strong> revise el Excel adjunto (hojas Incidencias e Informes).
+                {{else if .DescargaInformeURL}}
+                <strong>Acción requerida:</strong> descargue el informe Excel desde el enlace indicado más abajo (el adjunto no pudo enviarse por tamaño).
                 {{else}}
                 <strong>Acción requerida:</strong> revise el archivo en el panel de administración o vuelva a procesar cuando esté corregido.
                 {{end}}
@@ -384,7 +511,14 @@ const errorEmailTemplate = `
             {{if .AdjuntoExcel}}
             <div style="background:#eef4fc;padding:16px;border-radius:6px;margin-bottom:8px;">
               <p style="margin:0;font-size:14px;line-height:1.5;color:#0b3d91;">
-                <strong>Informe adjunto (Excel):</strong> contiene todas las novedades por fila, con el detalle en español en la columna <em>detalle_novedad</em>.
+                <strong>Informe adjunto (Excel):</strong> solo hojas Incidencias e Informes (no incluye Datos archivo).
+              </p>
+            </div>
+            {{else if .DescargaInformeURL}}
+            <div style="background:#eef4fc;padding:16px;border-radius:6px;margin-bottom:8px;">
+              <p style="margin:0;font-size:14px;line-height:1.5;color:#0b3d91;">
+                <strong>Descargar informe Excel:</strong>
+                <a href="{{.DescargaInformeURL}}" style="color:#0b3d91;">{{.DescargaInformeURL}}</a>
               </p>
             </div>
             {{end}}

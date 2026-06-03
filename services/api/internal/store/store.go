@@ -68,6 +68,8 @@ type FileValidationReport struct {
 	TotalInformativeValidations  int                     `json:"total_informative_validations"`
 	SourceColumns                []string                `json:"source_columns,omitempty"`
 	ExportedRows                 []FileExportedRow       `json:"exported_rows,omitempty"`
+	EmailSourceColumns           []string                `json:"email_source_columns,omitempty"`
+	EmailExportedRows            []FileExportedRow       `json:"email_exported_rows,omitempty"`
 }
 
 func NewMySQLFromEnv() (*Store, error) {
@@ -821,6 +823,11 @@ func completeFileValidationReport(
 			continue
 		}
 		blocking, info := validationnotes.Split(notes)
+		if strings.EqualFold(st, "FROZEN") && len(info) == 0 && len(blocking) == 0 {
+			info = []string{validationnotes.Informativo(
+				"La prima mensual es cero; la póliza se registra como congelada (no bloquea la carga del archivo).",
+			)}
+		}
 		if len(info) > 0 {
 			informative = append(informative, FilePendingValidation{
 				RowNumber:      in.RowNumber,
@@ -878,6 +885,7 @@ func completeFileValidationReport(
 	out.InformativeValidations = informative
 	out.TotalInformativeValidations = len(informative)
 	out.SourceColumns, out.ExportedRows = buildFileExportedRows(inputs)
+	out.EmailSourceColumns, out.EmailExportedRows = buildFileExportedRowsEmail(inputs)
 	return out
 }
 
@@ -1123,6 +1131,9 @@ func formatNovedadesColumn(notes []string) string {
 }
 
 func defaultPendingRowDetailMessage(policyStatus string, hadRawNotes bool) string {
+	if strings.EqualFold(strings.TrimSpace(policyStatus), "FROZEN") {
+		return "La póliza quedó congelada (prima mensual en cero); no bloquea la carga del archivo."
+	}
 	if strings.EqualFold(strings.TrimSpace(policyStatus), "MANUAL_REVIEW") {
 		return "La fila quedó en revisión manual; no se registró el detalle de cada validación en el sistema."
 	}
@@ -1166,10 +1177,8 @@ func ValidationReportClientCSV(r FileValidationReport) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// ValidationReportClientXLSX genera un libro Excel (.xlsx):
-// hoja «Incidencias» = bloquean o revisión manual (mismo contenido que el CSV);
-// hoja «Informes» = avisos informativos (p. ej. vencimiento anterior al mes de facturación) sin frenar la carga.
-func ValidationReportClientXLSX(r FileValidationReport) ([]byte, error) {
+// validationReportXLSX escribe hojas Incidencias e Informes; includeMirror añade «Datos archivo».
+func validationReportXLSX(r FileValidationReport, includeMirror bool) ([]byte, error) {
 	f := excelize.NewFile()
 	defer func() { _ = f.Close() }()
 	const sheetIncidencias = "Incidencias"
@@ -1186,12 +1195,14 @@ func ValidationReportClientXLSX(r FileValidationReport) ([]byte, error) {
 	if err := writeValidationReportSheet(f, sheetInformes, validationReportInformativeRows(r)); err != nil {
 		return nil, err
 	}
-	const sheetDatos = "Datos archivo"
-	if _, err := f.NewSheet(sheetDatos); err != nil {
-		return nil, err
-	}
-	if err := writeValidationReportMirrorSheet(f, sheetDatos, validationReportMirrorRows(r)); err != nil {
-		return nil, err
+	if includeMirror {
+		const sheetDatos = "Datos archivo"
+		if _, err := f.NewSheet(sheetDatos); err != nil {
+			return nil, err
+		}
+		if err := writeValidationReportMirrorSheet(f, sheetDatos, validationReportMirrorRows(r)); err != nil {
+			return nil, err
+		}
 	}
 	idxInc, _ := f.GetSheetIndex(sheetIncidencias)
 	f.SetActiveSheet(idxInc)
@@ -1200,6 +1211,54 @@ func ValidationReportClientXLSX(r FileValidationReport) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// ValidationReportClientXLSX genera un libro Excel (.xlsx):
+// hoja «Incidencias» = bloquean o revisión manual (mismo contenido que el CSV);
+// hoja «Informes» = avisos informativos (p. ej. vencimiento anterior al mes de facturación) sin frenar la carga;
+// hoja «Datos archivo» = espejo del origen con novedades.
+func ValidationReportClientXLSX(r FileValidationReport) ([]byte, error) {
+	return validationReportXLSX(r, true)
+}
+
+// ValidationReportEmailXLSX es el adjunto de correo: una única hoja que replica la estructura del archivo
+// con las filas que tuvieron incidencias (bloqueantes, revisión manual o avisos informativos)
+// y una última columna "novedades" con la observación.
+func ValidationReportEmailXLSX(r FileValidationReport) ([]byte, error) {
+	f := excelize.NewFile()
+	defer func() { _ = f.Close() }()
+	const sheet = "Reporte"
+	if err := f.SetSheetName("Sheet1", sheet); err != nil {
+		return nil, err
+	}
+	if err := writeValidationReportMirrorSheet(f, sheet, validationReportEmailMirrorRows(r)); err != nil {
+		return nil, err
+	}
+	buf, err := f.WriteToBuffer()
+	if err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// ValidationReportXLSXForErrorEmail genera un adjunto de una hoja cuando no hay informe JSON (error temprano).
+// Sin filas del archivo original, sólo registra el motivo del error en la columna novedades.
+func ValidationReportXLSXForErrorEmail(fileName, fileID, productID, errorReason string) ([]byte, error) {
+	summary := strings.TrimSpace(errorReason)
+	if summary == "" {
+		summary = "Error en procesamiento del archivo"
+	}
+	r := FileValidationReport{
+		FileName:  strings.TrimSpace(fileName),
+		FileID:    strings.TrimSpace(fileID),
+		ProductID: strings.TrimSpace(productID),
+		EmailExportedRows: []FileExportedRow{{
+			RowNumber:    0,
+			PolicyStatus: "ERROR",
+			Novedades:    formatNovedadesColumn([]string{validationnotes.Incidencia(summary)}),
+		}},
+	}
+	return ValidationReportEmailXLSX(r)
 }
 
 func writeValidationReportSheet(f *excelize.File, sheet string, rows [][]string) error {

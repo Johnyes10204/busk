@@ -104,6 +104,33 @@ func parseDateFieldMDYFirst(raw string, layouts []string, ctx dateYearContext) t
 	return parseDateFieldOrder(raw, layouts, dateOrderDMY, ctx)
 }
 
+// parseDateFieldDMYFirst: inclusiones Bolívar (día/mes/año antes que mes/día/año).
+func parseDateFieldDMYFirst(raw string, layouts []string, ctx dateYearContext) time.Time {
+	if t := parseDateFieldOrder(raw, layouts, dateOrderDMY, ctx); !t.IsZero() {
+		return t
+	}
+	return parseDateFieldOrder(raw, layouts, dateOrderMDY, ctx)
+}
+
+// parseBirthDateDMYDayGreaterThan12: 27-09-46 → día 27, mes 9 (cuando el primer segmento > 12).
+func parseBirthDateDMYDayGreaterThan12(raw string) time.Time {
+	m := numericDatePattern.FindStringSubmatch(normalizeDateRaw(raw))
+	if m == nil {
+		return time.Time{}
+	}
+	a, err1 := strconv.Atoi(m[1])
+	b, err2 := strconv.Atoi(m[2])
+	y, err3 := strconv.Atoi(m[3])
+	if err1 != nil || err2 != nil || err3 != nil {
+		return time.Time{}
+	}
+	y = resolveYear(y, dateYearContextBirth)
+	if a > 12 && b <= 12 {
+		return calendarDateUTC(b, a, y)
+	}
+	return time.Time{}
+}
+
 // parseBirthDate interpreta la fecha de nacimiento (regla de edad; no es validación de vigencia).
 func parseBirthDate(raw string, layouts []string, mapfreSheet bool) time.Time {
 	ctx := dateYearContextBirth
@@ -131,9 +158,9 @@ func parseAgeReferenceDate(raw string, layouts []string, mapfreSheet bool, produ
 	if mapfreSheet {
 		return parseDateFieldMDYFirst(raw, layouts, dateYearContextVigencia)
 	}
-	// Bolívar inclusiones: adjudicación en mes/día/año (como MICRO_BANCO); serial Excel soportado.
+	// Bolívar: misma convención que parseBolivarFechaInclusion (mes/día/año en celdas con guiones).
 	if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(productCode)), "BOLIVAR") {
-		return parseDateFieldMDYFirst(raw, layouts, dateYearContextVigencia)
+		return bolivarVigenciaFecha(raw, layouts)
 	}
 	return parseDateField(raw, layouts, dateYearContextVigencia)
 }

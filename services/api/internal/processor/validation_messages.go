@@ -340,6 +340,39 @@ func mensajeVencimientoMesPasado(mesMinimoAnio, mesMinimo int) string {
 	)
 }
 
+func mensajeBolivarVencimientoMesAnteriorAlCargue(
+	values map[string]string,
+	due time.Time,
+	cargueYear int,
+	cargueMonth time.Month,
+	prima float64,
+) string {
+	dueC := campoDesdeValues(values, "loan_due_date_current")
+	primaC := campoDesdeValues(values, "monthly_premium")
+	antYear, antMonth := bolivarMesAnteriorInmediato(cargueYear, cargueMonth)
+	var aviso string
+	if prima == 0 {
+		aviso = "Póliza congelada (prima en cero) con vencimiento anterior al mes de cargue. No bloquea la importación."
+	} else {
+		aviso = fmt.Sprintf(
+			"El archivo corresponde al cargue de %s. La fecha de vencimiento cae en %s (anterior al mes de cargue: se informan %s y todos los meses previos). Revise la prima mensual. No bloquea la importación.",
+			mesAnioRef(cargueYear, cargueMonth),
+			mesAnioRef(due.Year(), due.Month()),
+			mesAnioRef(antYear, antMonth),
+		)
+	}
+	msg := aviso
+	return mensajeConContexto(
+		msg,
+		lineaColumnaValor(dueC),
+		lineaValorUsado(FormatDateCanonical(due)),
+		lineaColumnaValor(primaC),
+		lineaReferencia("mes de cargue del archivo "+mesAnioRef(cargueYear, cargueMonth)),
+		archivoFacturacionRef(values),
+	)
+}
+
+// mensajeBolivarRevisarPrimaVencimientoInferior conserva el nombre histórico en tests/docs.
 func mensajeBolivarRevisarPrimaVencimientoInferior(
 	values map[string]string,
 	due time.Time,
@@ -347,16 +380,7 @@ func mensajeBolivarRevisarPrimaVencimientoInferior(
 	minMonth time.Month,
 	prima float64,
 ) string {
-	dueC := campoDesdeValues(values, "loan_due_date_current")
-	primaC := campoDesdeValues(values, "monthly_premium")
-	return mensajeConContexto(
-		"La fecha de vencimiento (mes/año) es anterior al mes de facturación del archivo; revise la prima mensual. No se usa el mes calendario en que se carga el lote (ej. mayo).",
-		lineaColumnaValor(dueC),
-		lineaValorUsado(FormatDateCanonical(due)),
-		lineaColumnaValor(primaC),
-		lineaReferencia("mes mínimo del archivo "+mesAnioRef(minYear, time.Month(minMonth))),
-		archivoFacturacionRef(values),
-	)
+	return mensajeBolivarVencimientoMesAnteriorAlCargue(values, due, minYear, minMonth, prima)
 }
 
 func mensajeBolivarPrimaCeroVencimientoInferior(mesFactAnio, mesFact int) string {
@@ -366,9 +390,9 @@ func mensajeBolivarPrimaCeroVencimientoInferior(mesFactAnio, mesFact int) string
 	)
 }
 
-func mensajeFechaBolivarAmbiguaMDY(campo, raw string, dmy, mdy time.Time) string {
+func mensajeFechaBolivarAmbiguaDMY(campo, raw string, dmy, mdy time.Time) string {
 	return fmt.Sprintf(
-		"%s: «%s» admite dos lecturas (%s día/mes/año o %s mes/día/año); se aplicó mes/día/año (convención inclusiones Bolívar). Corrija en origen si la lectura no es la esperada.",
+		"%s: «%s» admite dos lecturas (%s día/mes/año o %s mes/día/año); se aplicó mes/día/año (formato inclusiones Bolívar en Excel). Corrija en origen si la lectura no es la esperada.",
 		etiquetaCampoCanónico(campo),
 		raw,
 		FormatDateCanonical(dmy),
@@ -389,7 +413,7 @@ func mensajeFechaBolivarNoInterpretable(values map[string]string, canon string) 
 	return mensajeConContexto(
 		fmt.Sprintf("%s: fecha ambigua (día y mes ≤ 12); indique formato mes/día/año.", etiquetaCampoCanónico(canon)),
 		lineaColumnaValor(c),
-		lineaReferencia("convención inclusiones: mes/día/año"),
+		lineaReferencia("convención inclusiones Bolívar: mes/día/año (celdas con guiones)"),
 	)
 }
 
@@ -592,6 +616,10 @@ func mensajeFlujoCancelacionesMapfre() string {
 
 func mensajePrimaCeroSinCongelamiento() string {
 	return "La prima mensual es cero y el producto no tiene política de congelamiento; la póliza se marca como cancelada."
+}
+
+func mensajePolizaCongeladaPrimaCero() string {
+	return "La prima mensual es cero; la póliza se registra como congelada (no bloquea la carga del archivo)."
 }
 
 func mensajeResumenCreditoDuplicadoArchivo(cred string, count int, filasTodas, filasDup string) string {

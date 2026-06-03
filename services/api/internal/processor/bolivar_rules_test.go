@@ -133,6 +133,51 @@ func TestApplyBolivarDiagramRules_Tasa23SinObservacionIncidencia(t *testing.T) {
 	}
 }
 
+func TestBolivarApplyDiagramRules_SinIncidenciaEdadSiUnaInterpretacionValida(t *testing.T) {
+	cfg := ruleRuntimeConfig{
+		DateLayouts:              defaultDateLayouts(),
+		HasAgeLimits:             true,
+		AgeMin:                   18,
+		AgeMax:                   75.997,
+		AgeMaxDaysBeforeBirthday: 1,
+	}
+	values := map[string]string{
+		"birth_date":      "01/06/2007",
+		"loan_award_date": "05-20-25",
+	}
+	seen := make(map[string]struct{})
+	hard, _ := applyDiagramRules("bolivar_banco", values, seen, nil, 0, 0, cfg, &Service{})
+	for _, h := range hard {
+		if strings.Contains(strings.ToLower(h), "edad") || strings.Contains(strings.ToLower(h), "rango permitido") {
+			t.Fatalf("no debe registrar incidencia de edad si una lectura cumple: %v", hard)
+		}
+	}
+}
+
+func TestBolivarEdad_DualInterpretacionCumpleSiUnaVale(t *testing.T) {
+	layouts := defaultDateLayouts()
+	ref := time.Date(2025, 5, 20, 0, 0, 0, 0, time.UTC)
+	ok, edad := edadCumpleRangoBolivarDual("01/06/2007", layouts, ref, 18, 75.997, 1)
+	if !ok || edad != 18 {
+		t.Fatalf("mes/día/año da 18 cumplidos; día/mes da 17: debe pasar con MDY: ok=%v edad=%d", ok, edad)
+	}
+	values := map[string]string{
+		"birth_date":      "01/06/2007",
+		"loan_award_date": "05-20-25",
+	}
+	cfg := ruleRuntimeConfig{
+		DateLayouts:              defaultDateLayouts(),
+		HasAgeLimits:             true,
+		AgeMin:                   18,
+		AgeMax:                   75.997,
+		AgeMaxDaysBeforeBirthday: 1,
+	}
+	det := evaluarEdadDetalle(values, cfg, false, "BOLIVAR_BANCO")
+	if !det.cumple {
+		t.Fatalf("evaluarEdadDetalle Bolívar debe aceptar interpretación válida: %+v", det)
+	}
+}
+
 func TestBolivarEdadFueraRango_SoloConDeudaMayor20M(t *testing.T) {
 	cfg := ruleRuntimeConfig{
 		DateLayouts:                defaultDateLayouts(),
@@ -212,7 +257,7 @@ func TestBolivarMesFacturacionDesdeArchivo_Abril(t *testing.T) {
 	}
 }
 
-func TestBolivarVencimientoInferior_PrimaCeroSinIncidencia(t *testing.T) {
+func TestBolivarVencimientoInferior_PrimaCeroConVencPasadoSiGeneraInforme(t *testing.T) {
 	values := map[string]string{
 		"loan_due_date_current": "02-16-26",
 		"monthly_premium":       "0",
@@ -223,15 +268,17 @@ func TestBolivarVencimientoInferior_PrimaCeroSinIncidencia(t *testing.T) {
 		BolivarValidateDueMonth: true,
 	}
 	hard, soft := applyBolivarDiagramRules(values, cfg)
-	for _, h := range hard {
-		if strings.Contains(h, "vencimiento") || strings.Contains(h, "facturación") {
-			t.Fatalf("prima 0 no debe generar incidencia por vencimiento: %v", hard)
+	if len(hard) > 0 {
+		t.Fatalf("prima 0 con vencimiento pasado no debe generar incidencia dura: %v", hard)
+	}
+	found := false
+	for _, s := range soft {
+		if strings.Contains(strings.ToLower(s), "congelada") {
+			found = true
 		}
 	}
-	for _, s := range soft {
-		if strings.Contains(strings.ToLower(s), "vencimiento") || strings.Contains(strings.ToLower(s), "facturación") {
-			t.Fatalf("sin nota en informe si la fecha no es problema: %v", soft)
-		}
+	if !found {
+		t.Fatalf("prima 0 con vencimiento pasado debe generar informe de póliza congelada: %v", soft)
 	}
 }
 
@@ -260,6 +307,111 @@ func TestBolivarVencimientoInferior_PrimaPositivaInformeNoBloquea(t *testing.T) 
 	}
 }
 
+func TestBolivarVencimiento_MayoCargueAbrilHaciaAtras(t *testing.T) {
+	cfg := ruleRuntimeConfig{
+		DateLayouts:             defaultDateLayouts(),
+		BolivarValidateDueMonth: true,
+	}
+	base := map[string]string{
+		"monthly_premium": "25000",
+		"_file_name":      "MICRO_BANCO_MAYO_VF_2026.xlsx",
+	}
+	cases := []struct {
+		due      string
+		informar bool
+	}{
+		{"04-15-26", true},  // abril → informe (mes anterior a mayo)
+		{"03-15-26", true},  // marzo → informe
+		{"05-15-26", false}, // mayo cargue → OK
+		{"06-15-26", false}, // junio → OK
+	}
+	for _, tc := range cases {
+		values := map[string]string{
+			"loan_due_date_current": tc.due,
+			"monthly_premium":       base["monthly_premium"],
+			"_file_name":            base["_file_name"],
+		}
+		_, soft := applyBolivarDiagramRules(values, cfg)
+		tiene := false
+		for _, s := range soft {
+			low := strings.ToLower(s)
+			if strings.Contains(low, "anterior al mes de cargue") || strings.Contains(low, "meses previos") {
+				tiene = true
+			}
+		}
+		if tiene != tc.informar {
+			t.Fatalf("cargue MAYO due=%s informar=%v soft=%v", tc.due, tc.informar, soft)
+		}
+	}
+}
+
+func TestBolivarMesCargueDelLote_TodosLosMeses(t *testing.T) {
+	now := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	cfg := ruleRuntimeConfig{BolivarDueReferenceMonthOffset: -1}
+	meses := []struct {
+		archivo string
+		wantM   time.Month
+	}{
+		{"LOTE_ENERO_2026", time.January},
+		{"LOTE_FEBRERO_2026", time.February},
+		{"LOTE_MARZO_2026", time.March},
+		{"MICRO_BANCO_ABRIL", time.April},
+		{"MICRO_BANCO_MAYO", time.May},
+		{"FACT_JUNIO_2026", time.June},
+		{"FACT_JULIO_2026", time.July},
+		{"FACT_AGOSTO_2026", time.August},
+		{"FACT_SEPTIEMBRE_2026", time.September},
+		{"FACT_OCTUBRE_2026", time.October},
+		{"FACT_NOVIEMBRE_2026", time.November},
+		{"FACT_DICIEMBRE_2026", time.December},
+	}
+	for _, tc := range meses {
+		values := map[string]string{"_file_name": tc.archivo}
+		_, m := bolivarMesCargueDelLote(values, cfg, now)
+		if m != tc.wantM {
+			t.Fatalf("archivo %q: mes cargue %v want %v", tc.archivo, m, tc.wantM)
+		}
+	}
+}
+
+func TestBolivarVencimiento_AbrilCargueMarzoHaciaAtras(t *testing.T) {
+	cfg := ruleRuntimeConfig{
+		DateLayouts:             defaultDateLayouts(),
+		BolivarValidateDueMonth: true,
+	}
+	base := map[string]string{
+		"monthly_premium": "25000",
+		"_file_name":      "MICRO_BANCO_ABRIL_VF_Pruebas.xlsx",
+	}
+	cases := []struct {
+		due      string
+		informar bool
+	}{
+		{"03-15-26", true},  // marzo → informe
+		{"02-16-26", true},  // febrero → informe
+		{"04-15-26", false}, // abril cargue → OK
+		{"05-15-26", false}, // mayo → OK
+	}
+	for _, tc := range cases {
+		values := map[string]string{
+			"loan_due_date_current": tc.due,
+			"monthly_premium":       base["monthly_premium"],
+			"_file_name":            base["_file_name"],
+		}
+		_, soft := applyBolivarDiagramRules(values, cfg)
+		tiene := false
+		for _, s := range soft {
+			low := strings.ToLower(s)
+			if strings.Contains(low, "anterior al mes de cargue") || strings.Contains(low, "meses previos") {
+				tiene = true
+			}
+		}
+		if tiene != tc.informar {
+			t.Fatalf("due=%s informar=%v got soft=%v", tc.due, tc.informar, soft)
+		}
+	}
+}
+
 func TestBolivarVencimientoInferior_MayoOK(t *testing.T) {
 	values := map[string]string{
 		"loan_due_date_current": "05-15-26",
@@ -285,11 +437,11 @@ func TestBolivarVencimientoE10_SoloComparaMes(t *testing.T) {
 		time.Date(2026, 4, 30, 0, 0, 0, 0, time.UTC),
 		time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC),
 	} {
-		if bolivarVencimientoAntesMesMinimo(due, minY, minM) {
+		if bolivarVencimientoAntesMesCargue(due, minY, minM) {
 			t.Fatalf("vencimiento %v no debe fallar con mes mínimo abril", due)
 		}
 	}
-	if !bolivarVencimientoAntesMesMinimo(time.Date(2026, 3, 31, 0, 0, 0, 0, time.UTC), minY, minM) {
+	if !bolivarVencimientoAntesMesCargue(time.Date(2026, 3, 31, 0, 0, 0, 0, time.UTC), minY, minM) {
 		t.Fatal("marzo debe ser anterior al mes mínimo abril")
 	}
 }
