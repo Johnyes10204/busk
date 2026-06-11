@@ -466,6 +466,20 @@ func (s *Service) processOne(c *sftpclient.Client, job queuedJob) model.FileProc
 		}
 		log.Printf("[processor] stock cancelaciones producto=%s file_id=%s canceladas=%d", selectedProduct.ID, rec.ID, cancelled)
 	}
+	if ok && isMapfreCancelacionProduct(selectedProduct.Code) {
+		applied, err := s.applyMapfreCancellationsToStock(policies)
+		if err != nil {
+			log.Printf("[processor] warning: no se pudo aplicar anulaciones a stock file_id=%s err=%v", rec.ID, err)
+			msg := "advertencia: no se pudo marcar cancelaciones en stock MAPFRE"
+			if rec.ErrorReason == "" {
+				rec.ErrorReason = msg
+			} else {
+				rec.ErrorReason += " | " + msg
+			}
+		} else if applied > 0 {
+			log.Printf("[processor] anulacion_masiva file_id=%s filas_stock_canceladas=%d", rec.ID, applied)
+		}
+	}
 	s.updateProgress(job.ID, job.FileName, "PROCESSING", 85, "validaciones OK", selectedProductID, "")
 
 	rec.Status = model.FileStatusProcessed
@@ -521,11 +535,7 @@ func validateFile(r io.Reader, fileID, fileName string, candidates []model.Produ
 		return nil, fileHash, archivePath, "", errDuplicateFileHash
 	}
 
-	rows, err := readWorkbookRows(tmpPath, "")
-	if err != nil {
-		return nil, fileHash, archivePath, "", err
-	}
-	p, header, err := selectProductCandidate(rows, candidates)
+	p, header, rows, err := selectProductCandidateFromWorkbook(tmpPath, candidates)
 	if err != nil {
 		return nil, fileHash, archivePath, "", err
 	}
@@ -689,6 +699,9 @@ func validateFile(r io.Reader, fileID, fileName string, candidates []model.Produ
 			if status == "ACTIVE" {
 				status = "MANUAL_REVIEW"
 			}
+		}
+		if isMapfreCancelacionProduct(p.Code) && status == "ACTIVE" && len(ruleViolations) == 0 && len(diagramHards) == 0 {
+			status = "CANCELLED"
 		}
 
 		rawJSONBytes, _ := json.Marshal(values)
@@ -958,13 +971,13 @@ func (s *Service) buildRuleRuntimeConfig(p model.Product) ruleRuntimeConfig {
 	return cfg
 }
 
-func readWorkbookRows(tmpPath, _ string) ([][]string, error) {
+func readWorkbookRows(tmpPath, sheetName string) ([][]string, error) {
 	ext := strings.ToLower(filepath.Ext(tmpPath))
 
 	// Algunos archivos llegan con extensión .xls pero contenido .xlsx.
 	// Intentamos primero con excelize cuando ext es xlsx o xls.
 	if ext == ".xlsx" || ext == ".xls" {
-		if rows, err := readRowsWithExcelize(tmpPath); err == nil {
+		if rows, err := readRowsWithExcelize(tmpPath, sheetName); err == nil {
 			return rows, nil
 		}
 	}
@@ -974,7 +987,7 @@ func readWorkbookRows(tmpPath, _ string) ([][]string, error) {
 	return nil, fmt.Errorf("extensión no soportada: %s", ext)
 }
 
-func readRowsWithExcelize(tmpPath string) ([][]string, error) {
+func readRowsWithExcelize(tmpPath, sheetName string) ([][]string, error) {
 	f, err := excelize.OpenFile(tmpPath)
 	if err != nil {
 		return nil, err
@@ -986,12 +999,50 @@ func readRowsWithExcelize(tmpPath string) ([][]string, error) {
 		return nil, fmt.Errorf("sin hojas en workbook")
 	}
 	sheet := sheets[0]
+	want := strings.TrimSpace(sheetName)
+	if want != "" {
+		for _, s := range sheets {
+			if strings.EqualFold(strings.TrimSpace(s), want) {
+				sheet = s
+				break
+			}
+		}
+	}
 
 	rows, err := f.GetRows(sheet)
 	if err != nil {
 		return nil, fmt.Errorf("read rows %s: %w", sheet, err)
 	}
 	return rows, nil
+}
+
+// selectProductCandidateFromWorkbook prueba cada formato (prefijo ya filtrado) con su hoja Excel y encabezados.
+func selectProductCandidateFromWorkbook(tmpPath string, candidates []model.Product) (model.Product, []string, [][]string, error) {
+	bestScore := -1
+	var best model.Product
+	var bestHeader []string
+	var bestRows [][]string
+	for _, c := range candidates {
+		rows, err := readWorkbookRows(tmpPath, c.SheetName)
+		if err != nil || len(rows) < c.HeaderRow || c.HeaderRow <= 0 {
+			continue
+		}
+		header := rows[c.HeaderRow-1]
+		if !hasAllRequiredHeaders(header, c.Mappings) {
+			continue
+		}
+		score := countMappedHeaders(header, c.Mappings)
+		if score > bestScore {
+			bestScore = score
+			best = c
+			bestHeader = header
+			bestRows = rows
+		}
+	}
+	if bestScore < 0 {
+		return model.Product{}, nil, nil, fmt.Errorf("ningún formato coincide con encabezados requeridos del archivo")
+	}
+	return best, bestHeader, bestRows, nil
 }
 
 func readRowsWithXLS(tmpPath string) ([][]string, error) {
@@ -1140,6 +1191,26 @@ func applyDiagramRules(
 	code := strings.ToUpper(productCode)
 	softNotes = make([]string, 0)
 
+	if isMapfreCancelacionProduct(code) {
+		credit := strings.TrimSpace(values["credit_number"])
+		if credit != "" {
+			key := code + "::" + credit
+			if _, ok := seenCredits[key]; ok {
+				repeats := inFileCreditCounts[key]
+				if repeats < 2 {
+					repeats = 2
+				}
+				hardViolations = append(hardViolations, mensajeCreditoDuplicadoEnArchivo(
+					credit, repeats, inFileDuplicateCreditKeys, inFileDuplicateRows,
+				))
+			} else {
+				seenCredits[key] = struct{}{}
+			}
+		}
+		hardViolations = append(hardViolations, mapfreCancelacionViolaciones(values, cfg, svc.store)...)
+		return hardViolations, softNotes
+	}
+
 	hardViolations = append(hardViolations, mensajesFechasRequeridas(values, cfg)...)
 
 	if cfg.HasAgeLimits {
@@ -1179,8 +1250,8 @@ func applyDiagramRules(
 		return hardViolations, softNotes
 	}
 
-	// MAPFRE reglas duras: edad ingreso/permanencia, vigencias y planes.
-	if strings.HasPrefix(code, "MAPFRE") {
+	// MAPFRE reglas duras: edad ingreso/permanencia, vigencias y planes (no aplica a anulaciones masivas).
+	if strings.HasPrefix(code, "MAPFRE") && code != "MAPFRE_ANULACION" && code != "MAPFRE_ANULACION_MASIVA" {
 		// Catálogo de primas permitidas configurable por producto en BD.
 		hardViolations = append(hardViolations, validarPlanMapfre(code, values)...)
 
@@ -1792,17 +1863,21 @@ func numberInAllowed(raw string, allowed []float64) bool {
 }
 
 func codeToProductID(code string) string {
-	switch strings.ToUpper(code) {
-	case "MAPFRE_VIDA":
-		return "mapfre_vida"
-	case "MAPFRE_ACC_MEN":
-		return "mapfre_acc_men"
-	case "MAPFRE_CANCER":
-		return "mapfre_cancer"
-	case "BOLIVAR_STOCK":
-		return "bolivar_stock"
-	case "BOLIVAR_BANCO":
-		return "bolivar_banco"
+	switch strings.ToUpper(strings.TrimSpace(code)) {
+	case "MAPFRE_VIDA", "MAPFRE_INCLUSION_VIDA_VOLUNTARIO":
+		return "mapfre_inclusion_vida_voluntario"
+	case "MAPFRE_ACC_MEN", "MAPFRE_INCLUSION_AP_MENORES":
+		return "mapfre_inclusion_ap_menores"
+	case "MAPFRE_CANCER", "MAPFRE_INCLUSION_AP_CANCER":
+		return "mapfre_inclusion_ap_cancer"
+	case "MAPFRE_STOCK", "MAPFRE_STOCK_CARTERA":
+		return "mapfre_stock_cartera"
+	case "BOLIVAR_STOCK", "BOLIVAR_ESAL", "BOLIVAR_DEUDORES_STOCK_ESAL":
+		return "bolivar_deudores_stock_esal"
+	case "BOLIVAR_BANCO", "BOLIVAR_INCLUSION_DEUDORES_BANCO":
+		return "bolivar_inclusion_deudores_banco"
+	case "MAPFRE_ANULACION", "MAPFRE_ANULACION_MASIVA":
+		return "mapfre_anulacion_masiva"
 	default:
 		return strings.ToLower(code)
 	}

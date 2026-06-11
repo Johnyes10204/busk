@@ -124,7 +124,7 @@ func TestApplyBolivarDiagramRules_Tasa23SinObservacionIncidencia(t *testing.T) {
 	hard, _ := applyBolivarDiagramRules(values, cfg)
 	found := false
 	for _, h := range hard {
-		if strings.Contains(strings.ToLower(h), "prima mensual") {
+		if strings.Contains(strings.ToUpper(h), "REVISAR PRIMA") {
 			found = true
 		}
 	}
@@ -146,7 +146,7 @@ func TestBolivarApplyDiagramRules_SinIncidenciaEdadSiUnaInterpretacionValida(t *
 		"loan_award_date": "05-20-25",
 	}
 	seen := make(map[string]struct{})
-	hard, _ := applyDiagramRules("bolivar_banco", values, seen, nil, 0, 0, cfg, &Service{})
+	hard, _ := applyDiagramRules("BOLIVAR_INCLUSION_DEUDORES_BANCO", values, seen, nil, 0, 0, cfg, &Service{})
 	for _, h := range hard {
 		if strings.Contains(strings.ToLower(h), "edad") || strings.Contains(strings.ToLower(h), "rango permitido") {
 			t.Fatalf("no debe registrar incidencia de edad si una lectura cumple: %v", hard)
@@ -273,12 +273,13 @@ func TestBolivarVencimientoInferior_PrimaCeroConVencPasadoSiGeneraInforme(t *tes
 	}
 	found := false
 	for _, s := range soft {
-		if strings.Contains(strings.ToLower(s), "congelada") {
+		up := strings.ToUpper(s)
+		if strings.Contains(up, "PRIMA CERO") || strings.Contains(up, "ANTERIOR AL MES") {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("prima 0 con vencimiento pasado debe generar informe de póliza congelada: %v", soft)
+		t.Fatalf("prima 0 con vencimiento pasado debe generar informe: %v", soft)
 	}
 }
 
@@ -298,7 +299,7 @@ func TestBolivarVencimientoInferior_PrimaPositivaInformeNoBloquea(t *testing.T) 
 	}
 	found := false
 	for _, s := range soft {
-		if strings.Contains(strings.ToLower(s), "revise la prima") {
+		if strings.Contains(strings.ToUpper(s), "REVISAR PRIMA") || strings.Contains(strings.ToUpper(s), "ANTERIOR AL MES") {
 			found = true
 		}
 	}
@@ -335,7 +336,7 @@ func TestBolivarVencimiento_MayoCargueAbrilHaciaAtras(t *testing.T) {
 		tiene := false
 		for _, s := range soft {
 			low := strings.ToLower(s)
-			if strings.Contains(low, "anterior al mes de cargue") || strings.Contains(low, "meses previos") {
+			if strings.Contains(low, "anterior al mes") {
 				tiene = true
 			}
 		}
@@ -402,7 +403,7 @@ func TestBolivarVencimiento_AbrilCargueMarzoHaciaAtras(t *testing.T) {
 		tiene := false
 		for _, s := range soft {
 			low := strings.ToLower(s)
-			if strings.Contains(low, "anterior al mes de cargue") || strings.Contains(low, "meses previos") {
+			if strings.Contains(low, "anterior al mes") {
 				tiene = true
 			}
 		}

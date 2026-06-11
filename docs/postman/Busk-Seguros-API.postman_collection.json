@@ -420,7 +420,7 @@
                 "products"
               ]
             },
-            "description": "Ejemplo BOLIVAR sin congelacion; la politica se define por reglas guardadas en BD."
+            "description": "Ejemplo BOLIVAR: semilla con freeze_on_zero_premium (prima 0 = FROZEN). MAPFRE en semilla cancela prima 0 (sin freeze)."
           }
         },
         {

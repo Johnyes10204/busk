@@ -824,9 +824,7 @@ func completeFileValidationReport(
 		}
 		blocking, info := validationnotes.Split(notes)
 		if strings.EqualFold(st, "FROZEN") && len(info) == 0 && len(blocking) == 0 {
-			info = []string{validationnotes.Informativo(
-				"La prima mensual es cero; la póliza se registra como congelada (no bloquea la carga del archivo).",
-			)}
+			info = []string{validationnotes.Informativo("PRIMA CERO: PÓLIZA CONGELADA")}
 		}
 		if len(info) > 0 {
 			informative = append(informative, FilePendingValidation{
@@ -1125,22 +1123,20 @@ func formatNovedadesColumn(notes []string) string {
 		}
 		b.WriteString(strconv.Itoa(i + 1))
 		b.WriteString(". ")
-		b.WriteString(n)
+		b.WriteString(validationnotes.DisplayText(n))
 	}
 	return b.String()
 }
 
 func defaultPendingRowDetailMessage(policyStatus string, hadRawNotes bool) string {
+	_ = hadRawNotes
 	if strings.EqualFold(strings.TrimSpace(policyStatus), "FROZEN") {
-		return "La póliza quedó congelada (prima mensual en cero); no bloquea la carga del archivo."
+		return "PRIMA CERO: PÓLIZA CONGELADA"
 	}
 	if strings.EqualFold(strings.TrimSpace(policyStatus), "MANUAL_REVIEW") {
-		return "La fila quedó en revisión manual; no se registró el detalle de cada validación en el sistema."
+		return "REVISIÓN MANUAL"
 	}
-	if hadRawNotes {
-		return "La fila tiene incidencias marcadas, pero el texto de detalle no está disponible."
-	}
-	return "La fila tiene una incidencia sin descripción adicional."
+	return "INCIDENCIA SIN DETALLE"
 }
 
 func etiquetaEstadoPolizaInforme(status string) string {

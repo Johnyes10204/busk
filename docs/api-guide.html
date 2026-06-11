@@ -1,0 +1,1054 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Busk Seguros · Guía operativa del API</title>
+<style>
+  :root {
+    --bg: #0f172a;
+    --bg-soft: #111c34;
+    --panel: #ffffff;
+    --panel-soft: #f8fafc;
+    --border: #e2e8f0;
+    --text: #0f172a;
+    --muted: #64748b;
+    --primary: #2563eb;
+    --primary-soft: #dbeafe;
+    --success: #10b981;
+    --warning: #f59e0b;
+    --danger: #ef4444;
+    --code-bg: #0b1220;
+    --code-fg: #e2e8f0;
+    --get: #10b981;
+    --post: #2563eb;
+    --put: #f59e0b;
+    --patch: #8b5cf6;
+    --delete: #ef4444;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: var(--panel-soft);
+    color: var(--text);
+    line-height: 1.55;
+  }
+
+  /* === Header === */
+  header.top {
+    background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 100%);
+    color: #fff;
+    padding: 36px 28px 30px;
+    border-bottom: 1px solid #1e293b;
+  }
+  header.top .brand { font-size: 13px; letter-spacing: 0.18em; text-transform: uppercase; opacity: 0.7; }
+  header.top h1 { margin: 6px 0 4px; font-size: 28px; font-weight: 700; }
+  header.top p.tagline { margin: 0; opacity: 0.85; max-width: 720px; }
+  header.top .meta {
+    margin-top: 18px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
+  }
+  header.top .meta label { font-size: 12px; opacity: 0.75; }
+  header.top .meta input {
+    background: rgba(255,255,255,0.1);
+    border: 1px solid rgba(255,255,255,0.2);
+    color: #fff;
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 13px;
+    min-width: 280px;
+  }
+  header.top .meta input:focus { outline: 2px solid #60a5fa; }
+  header.top .meta .health-dot {
+    width: 10px; height: 10px; border-radius: 50%; background: #64748b;
+    display: inline-block; vertical-align: middle;
+  }
+  header.top .meta .health-dot.ok { background: var(--success); box-shadow: 0 0 0 4px rgba(16,185,129,0.25); }
+  header.top .meta .health-dot.fail { background: var(--danger); box-shadow: 0 0 0 4px rgba(239,68,68,0.25); }
+  header.top button.ping {
+    background: #fff; color: #0f172a; border: 0;
+    padding: 8px 14px; border-radius: 8px; font-weight: 600; cursor: pointer; font-size: 13px;
+  }
+
+  /* === Layout === */
+  .layout { display: grid; grid-template-columns: 260px 1fr; min-height: calc(100vh - 130px); }
+  aside.toc {
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    padding: 24px 16px;
+    position: sticky; top: 0; align-self: start;
+    height: 100vh; overflow-y: auto;
+  }
+  aside.toc h4 {
+    margin: 0 0 8px; font-size: 11px; letter-spacing: 0.12em;
+    color: var(--muted); text-transform: uppercase;
+  }
+  aside.toc nav a {
+    display: block; padding: 7px 10px; border-radius: 6px;
+    color: var(--text); text-decoration: none; font-size: 13.5px;
+  }
+  aside.toc nav a:hover { background: var(--panel-soft); }
+  aside.toc nav a.step::before {
+    content: attr(data-step);
+    display: inline-block; width: 22px; height: 22px;
+    background: var(--primary-soft); color: var(--primary);
+    border-radius: 50%; text-align: center; line-height: 22px;
+    font-size: 11px; font-weight: 700; margin-right: 8px;
+  }
+  aside.toc .group { margin-bottom: 18px; }
+
+  main { padding: 32px 36px 80px; max-width: 1100px; }
+
+  /* === Sections === */
+  section { margin-bottom: 44px; }
+  section > h2 {
+    margin: 0 0 6px; font-size: 22px; display: flex; align-items: center; gap: 12px;
+  }
+  section > h2 .step-badge {
+    display: inline-flex; width: 30px; height: 30px; border-radius: 50%;
+    background: var(--primary); color: #fff; font-size: 14px; font-weight: 700;
+    align-items: center; justify-content: center;
+  }
+  section > p.lead { color: var(--muted); margin: 0 0 18px; max-width: 800px; }
+
+  /* === Cards === */
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 18px 20px; margin: 14px 0;
+    box-shadow: 0 1px 2px rgba(15,23,42,0.04);
+  }
+  .endpoint { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+  .method {
+    display: inline-block; padding: 3px 9px; border-radius: 5px;
+    font-size: 11px; font-weight: 700; color: #fff; letter-spacing: 0.04em;
+  }
+  .method.GET { background: var(--get); }
+  .method.POST { background: var(--post); }
+  .method.PUT { background: var(--put); }
+  .method.PATCH { background: var(--patch); }
+  .method.DELETE { background: var(--delete); }
+  .endpoint code.path {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 14px; background: var(--panel-soft); border: 1px solid var(--border);
+    padding: 3px 8px; border-radius: 5px; color: var(--text);
+  }
+
+  .tabs { display: flex; gap: 4px; margin: 12px 0 0; border-bottom: 1px solid var(--border); }
+  .tabs button {
+    background: none; border: 0; padding: 8px 14px; cursor: pointer;
+    font-size: 13px; color: var(--muted); border-bottom: 2px solid transparent;
+  }
+  .tabs button.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+  .tab-panel { display: none; padding-top: 12px; }
+  .tab-panel.active { display: block; }
+
+  pre.code {
+    position: relative;
+    background: var(--code-bg); color: var(--code-fg);
+    padding: 16px 18px; padding-right: 70px;
+    border-radius: 8px; overflow-x: auto; font-size: 12.5px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    margin: 0;
+  }
+  pre.code .copy {
+    position: absolute; top: 8px; right: 8px;
+    background: rgba(255,255,255,0.08); color: var(--code-fg);
+    border: 1px solid rgba(255,255,255,0.18); padding: 3px 10px;
+    border-radius: 5px; font-size: 11px; cursor: pointer;
+  }
+  pre.code .copy:hover { background: rgba(255,255,255,0.18); }
+
+  /* === Try-it panel === */
+  .tryit {
+    background: linear-gradient(135deg, #f0fdf4 0%, #ecfeff 100%);
+    border: 1px solid #99f6e4;
+    border-radius: 10px;
+    padding: 14px 16px; margin-top: 14px;
+  }
+  .tryit h5 { margin: 0 0 10px; font-size: 13px; color: #065f46; text-transform: uppercase; letter-spacing: 0.08em; }
+  .tryit .field { display: flex; gap: 10px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
+  .tryit .field label { font-size: 12.5px; min-width: 120px; color: var(--text); }
+  .tryit .field input, .tryit .field textarea {
+    flex: 1; padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12.5px; background: #fff;
+  }
+  .tryit .field textarea { min-height: 120px; font-size: 12px; }
+  .tryit button.run {
+    background: var(--primary); color: #fff; border: 0;
+    padding: 8px 16px; border-radius: 6px; cursor: pointer;
+    font-size: 13px; font-weight: 600; margin-top: 6px;
+  }
+  .tryit button.run:hover { background: #1d4ed8; }
+  .tryit pre.result {
+    margin-top: 12px; background: #0b1220; color: #e2e8f0;
+    padding: 12px 14px; border-radius: 6px; font-size: 12px;
+    max-height: 320px; overflow: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .tryit .status-line { font-size: 12px; margin-top: 8px; color: var(--muted); }
+  .tryit .status-line .pill {
+    display: inline-block; padding: 2px 8px; border-radius: 10px;
+    font-weight: 600; margin-right: 6px;
+  }
+  .pill.ok { background: #d1fae5; color: #065f46; }
+  .pill.warn { background: #fef3c7; color: #92400e; }
+  .pill.err { background: #fee2e2; color: #991b1b; }
+
+  /* === Tables === */
+  table { width: 100%; border-collapse: collapse; margin: 8px 0; }
+  table th, table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 13.5px; vertical-align: top; }
+  table th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+  table code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; background: var(--panel-soft); padding: 2px 6px; border-radius: 4px; }
+
+  /* === Callouts === */
+  .callout {
+    border-left: 4px solid var(--primary);
+    background: #eff6ff;
+    padding: 12px 14px; border-radius: 6px;
+    font-size: 13.5px; margin: 10px 0;
+  }
+  .callout.warn { border-color: var(--warning); background: #fffbeb; }
+  .callout.tip { border-color: var(--success); background: #f0fdf4; }
+  .callout strong { display: inline-block; margin-right: 4px; }
+
+  /* === Flow diagram === */
+  .flow {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px;
+    margin: 18px 0;
+  }
+  .flow .step-card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px; position: relative;
+  }
+  .flow .step-card .num {
+    width: 26px; height: 26px; border-radius: 50%; background: var(--primary-soft);
+    color: var(--primary); font-weight: 700; font-size: 13px;
+    display: flex; align-items: center; justify-content: center; margin-bottom: 8px;
+  }
+  .flow .step-card h6 { margin: 0 0 4px; font-size: 13.5px; }
+  .flow .step-card p { margin: 0; font-size: 12.5px; color: var(--muted); }
+
+  /* Endpoint reference table */
+  .ref-row { display: grid; grid-template-columns: 80px 1fr 1fr; gap: 10px; padding: 8px 10px; border-bottom: 1px solid var(--border); align-items: center; }
+  .ref-row:hover { background: var(--panel-soft); }
+  .ref-row code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: 1fr; }
+    aside.toc { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--border); }
+    main { padding: 24px 18px 60px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="brand">Busk Seguros · Plataforma de procesamiento</div>
+  <h1>Guía operativa del API</h1>
+  <p class="tagline">
+    Cómo configurar un producto, registrar sus formatos, definir las primas permitidas, lanzar el procesamiento
+    y consultar resultados — todo a partir de los endpoints reales de <code>services/api/main.go</code>.
+  </p>
+  <div class="meta">
+    <label for="baseUrl">Base URL:</label>
+    <input id="baseUrl" type="text" value="http://localhost:8080" />
+    <button class="ping" onclick="checkHealth()">Probar conexión</button>
+    <span id="healthBadge"><span class="health-dot" id="healthDot"></span> <span id="healthText" style="font-size:12px;opacity:.85;">sin verificar</span></span>
+  </div>
+</header>
+
+<div class="layout">
+  <aside class="toc">
+    <div class="group">
+      <h4>Mapa</h4>
+      <nav>
+        <a href="#overview">Visión general</a>
+        <a href="#flow">Flujo end-to-end</a>
+      </nav>
+    </div>
+    <div class="group">
+      <h4>Paso a paso</h4>
+      <nav>
+        <a class="step" data-step="1" href="#paso-1">Crear producto</a>
+        <a class="step" data-step="2" href="#paso-2">Crear formatos</a>
+        <a class="step" data-step="3" href="#paso-3">Activar formato</a>
+        <a class="step" data-step="4" href="#paso-4">Probar matching</a>
+        <a class="step" data-step="5" href="#paso-5">Primas permitidas</a>
+        <a class="step" data-step="6" href="#paso-6">Procesar archivos</a>
+        <a class="step" data-step="7" href="#paso-7">Monitorear progreso</a>
+        <a class="step" data-step="8" href="#paso-8">Inspeccionar archivos</a>
+        <a class="step" data-step="9" href="#paso-9">Reportes y calidad</a>
+        <a class="step" data-step="10" href="#paso-10">Consultar pólizas</a>
+      </nav>
+    </div>
+    <div class="group">
+      <h4>Referencia</h4>
+      <nav>
+        <a href="#reference">Todos los endpoints</a>
+        <a href="#errors">Códigos de error</a>
+      </nav>
+    </div>
+  </aside>
+
+  <main>
+
+  <!-- ===== Overview ===== -->
+  <section id="overview">
+    <h2>Visión general</h2>
+    <p class="lead">
+      El API expone 18 endpoints bajo el prefijo <code>/api/v1</code>. Está organizado en cinco bloques funcionales:
+      <strong>productos</strong>, <strong>formatos</strong>, <strong>primas permitidas</strong>,
+      <strong>procesamiento</strong> y <strong>consultas / reportes</strong>.
+    </p>
+    <div class="card">
+      <table>
+        <tr><th>Bloque</th><th>Propósito</th><th>Endpoints clave</th></tr>
+        <tr>
+          <td><strong>Productos</strong></td>
+          <td>Catálogo lógico (Bolívar, Mapfre, etc.). Cada uno tiene un <code>id</code>, <code>code</code> y opcionalmente reglas / mapeos base.</td>
+          <td><code>/products</code></td>
+        </tr>
+        <tr>
+          <td><strong>Formatos</strong></td>
+          <td>Variantes de archivo de un producto (planes, vigencias). Definen <em>file_prefix</em>, <em>sheet_name</em>, <em>header_row</em>, mapeos y reglas.</td>
+          <td><code>/product-formats</code>, <code>/product-formats/active</code>, <code>/product-formats/match-test</code></td>
+        </tr>
+        <tr>
+          <td><strong>Primas permitidas</strong></td>
+          <td>Lista blanca numérica de primas válidas por producto. Se usa para validar cada póliza.</td>
+          <td><code>/products/allowed-premiums</code></td>
+        </tr>
+        <tr>
+          <td><strong>Procesamiento</strong></td>
+          <td>Escanea SFTP / disco, encola archivos, expone progreso y permite reintentos.</td>
+          <td><code>/process/scan</code>, <code>/process/progress</code>, <code>/files/retry</code></td>
+        </tr>
+        <tr>
+          <td><strong>Consultas y reportes</strong></td>
+          <td>Listar archivos, descargar originales, ver pólizas, exportar reportes de validación en CSV/XLSX.</td>
+          <td><code>/files</code>, <code>/policies</code>, <code>/policies/search</code>, <code>/files/summary</code>, <code>/files/validation-*</code></td>
+        </tr>
+      </table>
+    </div>
+  </section>
+
+  <!-- ===== Flow ===== -->
+  <section id="flow">
+    <h2>Flujo end-to-end</h2>
+    <p class="lead">Camino feliz desde producto nuevo hasta consulta de pólizas.</p>
+    <div class="flow">
+      <div class="step-card"><div class="num">1</div><h6>Crear producto</h6><p>POST <code>/products</code> con id + code.</p></div>
+      <div class="step-card"><div class="num">2</div><h6>Registrar formatos</h6><p>POST <code>/product-formats</code> por cada variante.</p></div>
+      <div class="step-card"><div class="num">3</div><h6>Activar formato</h6><p>PATCH <code>/product-formats/active</code>.</p></div>
+      <div class="step-card"><div class="num">4</div><h6>Probar matching</h6><p>POST <code>/product-formats/match-test</code> con headers.</p></div>
+      <div class="step-card"><div class="num">5</div><h6>Definir primas</h6><p>PUT <code>/products/allowed-premiums</code>.</p></div>
+      <div class="step-card"><div class="num">6</div><h6>Lanzar proceso</h6><p>POST <code>/process/scan</code> (async).</p></div>
+      <div class="step-card"><div class="num">7</div><h6>Monitorear</h6><p>GET <code>/process/progress</code>.</p></div>
+      <div class="step-card"><div class="num">8</div><h6>Listar archivos</h6><p>GET <code>/files</code>.</p></div>
+      <div class="step-card"><div class="num">9</div><h6>Reportes</h6><p>GET <code>/files/summary</code> + <code>validation-*</code>.</p></div>
+      <div class="step-card"><div class="num">10</div><h6>Consultar pólizas</h6><p>GET <code>/policies/search</code>.</p></div>
+    </div>
+    <div class="callout tip">
+      <strong>Atajo:</strong> si solo quieres ver el sistema vivo, llama <code>POST /api/v1/bootstrap/sample-products</code> para
+      sembrar productos de ejemplo y saltar directo al paso 6.
+    </div>
+  </section>
+
+  <!-- ===== STEP 1: Create product ===== -->
+  <section id="paso-1">
+    <h2><span class="step-badge">1</span> Crear un producto</h2>
+    <p class="lead">Define el contenedor lógico. Si solo registras <code>id</code> y <code>code</code>, queda como producto "vacío"; los mapeos y reglas se aplican a nivel de formato (paso 2).</p>
+
+    <div class="card">
+      <div class="endpoint">
+        <span class="method POST">POST</span>
+        <code class="path">/api/v1/products</code>
+      </div>
+
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="p1-req">Request</button>
+        <button class="tab-btn" data-tab="p1-res">Response</button>
+        <button class="tab-btn" data-tab="p1-curl">cURL</button>
+      </div>
+      <div class="tab-panel active" id="p1-req">
+        <pre class="code"><button class="copy">copiar</button>{
+  "id": "bolivar_vida_grupo",
+  "code": "BOL-VG-001",
+  "name": "Bolívar Vida Grupo",
+  "description": "Pólizas de vida grupo emitidas por Bolívar"
+}</pre>
+      </div>
+      <div class="tab-panel" id="p1-res">
+        <pre class="code"><button class="copy">copiar</button>HTTP/1.1 201 Created
+Content-Type: application/json
+
+{
+  "id": "bolivar_vida_grupo",
+  "code": "BOL-VG-001",
+  "name": "Bolívar Vida Grupo",
+  "description": "Pólizas de vida grupo emitidas por Bolívar",
+  "file_prefix": "",
+  "mappings": null,
+  "rules": null
+}</pre>
+      </div>
+      <div class="tab-panel" id="p1-curl">
+        <pre class="code"><button class="copy">copiar</button>curl -X POST "$BASE/api/v1/products" \
+  -H "Content-Type: application/json" \
+  -d '{"id":"bolivar_vida_grupo","code":"BOL-VG-001","name":"Bolívar Vida Grupo"}'</pre>
+      </div>
+
+      <div class="tryit">
+        <h5>Probar ahora</h5>
+        <div class="field">
+          <label>Body JSON</label>
+          <textarea id="p1-body">{
+  "id": "bolivar_vida_grupo",
+  "code": "BOL-VG-001",
+  "name": "Bolívar Vida Grupo"
+}</textarea>
+        </div>
+        <button class="run" onclick="runCall('p1', 'POST', '/api/v1/products', 'p1-body')">Ejecutar POST /products</button>
+        <div class="status-line" id="p1-status"></div>
+        <pre class="result" id="p1-result" style="display:none;"></pre>
+      </div>
+
+      <div class="callout warn">
+        <strong>Validación:</strong> <code>id</code> y <code>code</code> son obligatorios. Si envías <code>mappings</code>,
+        cada uno debe traer <code>target_field</code> y <code>source_header</code>, o devuelve 400 con <code>missing_fields</code>.
+      </div>
+    </div>
+
+    <h3 style="font-size:16px;">Listar productos existentes</h3>
+    <div class="card">
+      <div class="endpoint">
+        <span class="method GET">GET</span>
+        <code class="path">/api/v1/products</code>
+      </div>
+      <div class="tryit">
+        <h5>Probar ahora</h5>
+        <button class="run" onclick="runCall('p1g', 'GET', '/api/v1/products')">Ejecutar GET /products</button>
+        <div class="status-line" id="p1g-status"></div>
+        <pre class="result" id="p1g-result" style="display:none;"></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== STEP 2: Formats ===== -->
+  <section id="paso-2">
+    <h2><span class="step-badge">2</span> Crear varios formatos para un producto</h2>
+    <p class="lead">Un producto puede tener N formatos (por plan, por convenio, por aseguradora origen). Cada formato describe
+    cómo leer su archivo: prefijo del nombre, hoja, fila de cabecera, mapeo de columnas y reglas de validación.</p>
+
+    <div class="card">
+      <div class="endpoint">
+        <span class="method POST">POST</span>
+        <code class="path">/api/v1/product-formats</code>
+      </div>
+
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="p2-req">Request</button>
+        <button class="tab-btn" data-tab="p2-res">Response</button>
+        <button class="tab-btn" data-tab="p2-curl">cURL</button>
+      </div>
+      <div class="tab-panel active" id="p2-req">
+        <pre class="code"><button class="copy">copiar</button>{
+  "id": "bolivar_vg_plan_a",
+  "product_id": "bolivar_vida_grupo",
+  "name": "Plan A — Convenio empleados",
+  "file_prefix": "BOL_VG_A_",
+  "sheet_name": "Polizas",
+  "header_row": 3,
+  "priority": 10,
+  "active": true,
+  "mappings": [
+    { "target_field": "credit_number",   "source_header": "NRO CREDITO",    "required": true },
+    { "target_field": "document_number", "source_header": "DOCUMENTO",      "required": true },
+    { "target_field": "premium",         "source_header": "PRIMA",          "required": true },
+    { "target_field": "customer_name",   "source_header": "NOMBRE",         "required": false }
+  ],
+  "rules": [
+    { "type": "allowed_premium", "field": "premium" },
+    { "type": "non_empty",       "field": "document_number" }
+  ]
+}</pre>
+      </div>
+      <div class="tab-panel" id="p2-res">
+        <pre class="code"><button class="copy">copiar</button>HTTP/1.1 201 Created
+
+{
+  "id": "bolivar_vg_plan_a",
+  "product_id": "bolivar_vida_grupo",
+  "name": "Plan A — Convenio empleados",
+  "file_prefix": "BOL_VG_A_",
+  "sheet_name": "Polizas",
+  "header_row": 3,
+  "priority": 10,
+  "active": true,
+  "mappings": [ ... ],
+  "rules": [ ... ]
+}</pre>
+      </div>
+      <div class="tab-panel" id="p2-curl">
+        <pre class="code"><button class="copy">copiar</button>curl -X POST "$BASE/api/v1/product-formats" \
+  -H "Content-Type: application/json" \
+  -d @formato_plan_a.json</pre>
+      </div>
+
+      <div class="tryit">
+        <h5>Probar ahora</h5>
+        <div class="field">
+          <label>Body JSON</label>
+          <textarea id="p2-body">{
+  "id": "bolivar_vg_plan_a",
+  "product_id": "bolivar_vida_grupo",
+  "name": "Plan A",
+  "file_prefix": "BOL_VG_A_",
+  "sheet_name": "Polizas",
+  "header_row": 3,
+  "priority": 10,
+  "active": true,
+  "mappings": [
+    { "target_field": "credit_number",   "source_header": "NRO CREDITO",    "required": true },
+    { "target_field": "document_number", "source_header": "DOCUMENTO",      "required": true },
+    { "target_field": "premium",         "source_header": "PRIMA",          "required": true }
+  ],
+  "rules": []
+}</textarea>
+        </div>
+        <button class="run" onclick="runCall('p2', 'POST', '/api/v1/product-formats', 'p2-body')">Ejecutar POST /product-formats</button>
+        <div class="status-line" id="p2-status"></div>
+        <pre class="result" id="p2-result" style="display:none;"></pre>
+      </div>
+
+      <div class="callout">
+        <strong>Multi-formato:</strong> repite el POST cambiando <code>id</code>, <code>file_prefix</code> y <code>mappings</code>
+        para registrar Plan B, Plan C, etc. La <code>priority</code> rompe empates cuando varios formatos podrían capturar el mismo archivo.
+      </div>
+    </div>
+
+    <h3 style="font-size:16px;">Listar formatos por producto</h3>
+    <div class="card">
+      <div class="endpoint">
+        <span class="method GET">GET</span>
+        <code class="path">/api/v1/product-formats?product_id=&lt;id&gt;</code>
+      </div>
+      <div class="tryit">
+        <h5>Probar ahora</h5>
+        <div class="field">
+          <label>product_id</label>
+          <input id="p2g-pid" value="bolivar_vida_grupo" />
+        </div>
+        <button class="run" onclick="runCall('p2g', 'GET', '/api/v1/product-formats?product_id=' + encodeURIComponent(document.getElementById('p2g-pid').value))">Ejecutar</button>
+        <div class="status-line" id="p2g-status"></div>
+        <pre class="result" id="p2g-result" style="display:none;"></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== STEP 3: Activate format ===== -->
+  <section id="paso-3">
+    <h2><span class="step-badge">3</span> Activar / desactivar un formato</h2>
+    <p class="lead">Permite excluir un formato sin borrarlo (útil cuando un convenio se suspende temporalmente).</p>
+    <div class="card">
+      <div class="endpoint">
+        <span class="method PATCH">PATCH</span>
+        <code class="path">/api/v1/product-formats/active</code>
+      </div>
+      <pre class="code"><button class="copy">copiar</button>{
+  "id": "bolivar_vg_plan_a",
+  "active": false
+}</pre>
+      <div class="tryit">
+        <h5>Probar ahora</h5>
+        <div class="field"><label>id formato</label><input id="p3-id" value="bolivar_vg_plan_a" /></div>
+        <div class="field"><label>active</label>
+          <select id="p3-active" style="padding:7px 10px;border:1px solid var(--border);border-radius:6px;">
+            <option value="true">true</option>
+            <option value="false">false</option>
+          </select>
+        </div>
+        <button class="run" onclick="runCall('p3', 'PATCH', '/api/v1/product-formats/active', null, () => JSON.stringify({ id: document.getElementById('p3-id').value, active: document.getElementById('p3-active').value === 'true' }))">Ejecutar PATCH</button>
+        <div class="status-line" id="p3-status"></div>
+        <pre class="result" id="p3-result" style="display:none;"></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== STEP 4: Match test ===== -->
+  <section id="paso-4">
+    <h2><span class="step-badge">4</span> Probar el matching antes de procesar</h2>
+    <p class="lead">Simula el algoritmo de selección: dado un nombre de archivo y las cabeceras leídas, devuelve qué formato
+    gana, cuántos campos requeridos calzaron y por qué un candidato fue descartado.</p>
+    <div class="card">
+      <div class="endpoint">
+        <span class="method POST">POST</span>
+        <code class="path">/api/v1/product-formats/match-test</code>
+      </div>
+      <pre class="code"><button class="copy">copiar</button>{
+  "file_name": "BOL_VG_A_2026_06.xlsx",
+  "product_id": "bolivar_vida_grupo",
+  "headers": ["NRO CREDITO", "DOCUMENTO", "NOMBRE", "PRIMA", "VIGENCIA"]
+}</pre>
+      <p style="font-size:13.5px;color:var(--muted);margin:8px 0 0;">
+        Respuesta incluye: <code>matched</code>, <code>winner</code> (formato ganador), y un arreglo <code>candidates</code> con
+        <code>required_total</code>, <code>required_matched</code>, <code>mapped_match_count</code> y <code>score</code>.
+        El de mayor <code>score</code> con <code>required_ok=true</code> gana.
+      </p>
+      <div class="tryit">
+        <h5>Probar ahora</h5>
+        <div class="field"><label>Body</label>
+          <textarea id="p4-body">{
+  "file_name": "BOL_VG_A_2026_06.xlsx",
+  "product_id": "bolivar_vida_grupo",
+  "headers": ["NRO CREDITO", "DOCUMENTO", "NOMBRE", "PRIMA"]
+}</textarea>
+        </div>
+        <button class="run" onclick="runCall('p4', 'POST', '/api/v1/product-formats/match-test', 'p4-body')">Ejecutar match-test</button>
+        <div class="status-line" id="p4-status"></div>
+        <pre class="result" id="p4-result" style="display:none;"></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== STEP 5: Allowed premiums ===== -->
+  <section id="paso-5">
+    <h2><span class="step-badge">5</span> Establecer las primas permitidas</h2>
+    <p class="lead">Cada producto tiene una lista blanca de primas válidas. Cualquier póliza con una prima fuera de esta lista
+    queda marcada como inválida durante el procesamiento.</p>
+
+    <div class="card">
+      <h4 style="margin:0 0 6px;font-size:14px;">Reemplazar la lista completa (idempotente)</h4>
+      <div class="endpoint">
+        <span class="method PUT">PUT</span>
+        <code class="path">/api/v1/products/allowed-premiums</code>
+      </div>
+      <pre class="code"><button class="copy">copiar</button>{
+  "product_id": "bolivar_vida_grupo",
+  "premiums": [12500.00, 18750.00, 25000.00, 37500.00]
+}</pre>
+      <div class="tryit">
+        <h5>Probar ahora</h5>
+        <div class="field"><label>Body</label>
+          <textarea id="p5-body">{
+  "product_id": "bolivar_vida_grupo",
+  "premiums": [12500, 18750, 25000, 37500]
+}</textarea>
+        </div>
+        <button class="run" onclick="runCall('p5', 'PUT', '/api/v1/products/allowed-premiums', 'p5-body')">Ejecutar PUT</button>
+        <div class="status-line" id="p5-status"></div>
+        <pre class="result" id="p5-result" style="display:none;"></pre>
+      </div>
+    </div>
+
+    <div class="card">
+      <h4 style="margin:0 0 6px;font-size:14px;">Añadir una sola prima</h4>
+      <div class="endpoint">
+        <span class="method POST">POST</span>
+        <code class="path">/api/v1/products/allowed-premiums</code>
+      </div>
+      <pre class="code"><button class="copy">copiar</button>{ "product_id": "bolivar_vida_grupo", "premium": 50000 }</pre>
+    </div>
+
+    <div class="card">
+      <h4 style="margin:0 0 6px;font-size:14px;">Consultar / borrar primas</h4>
+      <div class="endpoint">
+        <span class="method GET">GET</span>
+        <code class="path">/api/v1/products/allowed-premiums?product_id=&lt;id&gt;</code>
+      </div>
+      <div class="endpoint">
+        <span class="method DELETE">DELETE</span>
+        <code class="path">/api/v1/products/allowed-premiums?product_id=&lt;id&gt;&amp;premium=12500</code>
+      </div>
+      <p style="font-size:13.5px;color:var(--muted);">
+        Sin <code>premium</code> en el query, el DELETE limpia toda la lista del producto.
+      </p>
+      <div class="tryit">
+        <h5>Consultar primas vigentes</h5>
+        <div class="field"><label>product_id</label><input id="p5g-pid" value="bolivar_vida_grupo" /></div>
+        <button class="run" onclick="runCall('p5g', 'GET', '/api/v1/products/allowed-premiums?product_id=' + encodeURIComponent(document.getElementById('p5g-pid').value))">Ejecutar GET</button>
+        <div class="status-line" id="p5g-status"></div>
+        <pre class="result" id="p5g-result" style="display:none;"></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== STEP 6: Process ===== -->
+  <section id="paso-6">
+    <h2><span class="step-badge">6</span> Procesar los archivos</h2>
+    <p class="lead">Dispara el escaneo del origen (SFTP / disco) y encola cada archivo nuevo a los workers.
+    El POST regresa <em>inmediatamente</em>; el trabajo continúa en segundo plano.</p>
+    <div class="card">
+      <div class="endpoint">
+        <span class="method POST">POST</span>
+        <code class="path">/api/v1/process/scan</code>
+      </div>
+      <pre class="code"><button class="copy">copiar</button>HTTP/1.1 202 Accepted
+{
+  "status": "queued",
+  "enqueued": 7,
+  "message": "archivos escaneados y encolados para procesamiento asíncrono con workers"
+}</pre>
+      <div class="tryit">
+        <h5>Probar ahora</h5>
+        <button class="run" onclick="runCall('p6', 'POST', '/api/v1/process/scan')">Lanzar scan</button>
+        <div class="status-line" id="p6-status"></div>
+        <pre class="result" id="p6-result" style="display:none;"></pre>
+      </div>
+    </div>
+
+    <div class="card">
+      <h4 style="margin:0 0 6px;font-size:14px;">Reintentar un archivo</h4>
+      <div class="endpoint">
+        <span class="method POST">POST</span>
+        <code class="path">/api/v1/files/retry?file_id=&lt;id&gt;</code>
+      </div>
+      <p style="font-size:13.5px;color:var(--muted);">
+        Devuelve un nuevo <code>file_id</code> y deja el original con estado de origen. Útil después de corregir mapeos o reglas.
+      </p>
+      <div class="tryit">
+        <h5>Reintentar</h5>
+        <div class="field"><label>file_id</label><input id="p6r-fid" placeholder="uuid del archivo" /></div>
+        <button class="run" onclick="runCall('p6r', 'POST', '/api/v1/files/retry?file_id=' + encodeURIComponent(document.getElementById('p6r-fid').value))">Reintentar</button>
+        <div class="status-line" id="p6r-status"></div>
+        <pre class="result" id="p6r-result" style="display:none;"></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== STEP 7: Progress ===== -->
+  <section id="paso-7">
+    <h2><span class="step-badge">7</span> Monitorear el progreso</h2>
+    <p class="lead">Snapshot en tiempo real del procesamiento por archivo: estado, filas leídas, válidas, descartadas, etc.</p>
+    <div class="card">
+      <div class="endpoint">
+        <span class="method GET">GET</span>
+        <code class="path">/api/v1/process/progress</code>
+      </div>
+      <div class="tryit">
+        <h5>Probar ahora</h5>
+        <button class="run" onclick="runCall('p7', 'GET', '/api/v1/process/progress')">Obtener snapshot</button>
+        <div class="status-line" id="p7-status"></div>
+        <pre class="result" id="p7-result" style="display:none;"></pre>
+        <p style="font-size:12px;color:var(--muted);margin-top:6px;">
+          Tip: si quieres "stream" simple, llama este endpoint cada 2–3 s desde el frontend.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== STEP 8: Files ===== -->
+  <section id="paso-8">
+    <h2><span class="step-badge">8</span> Inspeccionar los archivos procesados</h2>
+    <p class="lead">Lista todos los registros de archivos con metadatos: estado final, formato detectado, filas, ruta archivada.</p>
+    <div class="card">
+      <div class="endpoint">
+        <span class="method GET">GET</span>
+        <code class="path">/api/v1/files</code>
+      </div>
+      <div class="tryit">
+        <h5>Probar ahora</h5>
+        <button class="run" onclick="runCall('p8', 'GET', '/api/v1/files')">Listar archivos</button>
+        <div class="status-line" id="p8-status"></div>
+        <pre class="result" id="p8-result" style="display:none;"></pre>
+      </div>
+    </div>
+
+    <div class="card">
+      <h4 style="margin:0 0 6px;font-size:14px;">Descargar el archivo original</h4>
+      <div class="endpoint">
+        <span class="method GET">GET</span>
+        <code class="path">/api/v1/files/download?file_id=&lt;id&gt;</code>
+      </div>
+      <p style="font-size:13.5px;color:var(--muted);">
+        Sirve el binario archivado (<code>archive_path</code>) con su nombre original.
+        Devuelve 404 si el archivo ya fue purgado o no se almacenó.
+      </p>
+    </div>
+  </section>
+
+  <!-- ===== STEP 9: Quality / validation reports ===== -->
+  <section id="paso-9">
+    <h2><span class="step-badge">9</span> Reportes de calidad y validaciones</h2>
+    <p class="lead">Por cada archivo procesado puedes obtener: un resumen ejecutivo, el reporte detallado de validaciones,
+    y exportarlo a CSV o XLSX para enviar a operaciones.</p>
+
+    <div class="card">
+      <h4 style="margin:0 0 6px;font-size:14px;">Resumen de calidad</h4>
+      <div class="endpoint">
+        <span class="method GET">GET</span>
+        <code class="path">/api/v1/files/summary?file_id=&lt;id&gt;</code>
+      </div>
+      <div class="tryit">
+        <h5>Probar ahora</h5>
+        <div class="field"><label>file_id</label><input id="p9s-fid" /></div>
+        <button class="run" onclick="runCall('p9s', 'GET', '/api/v1/files/summary?file_id=' + encodeURIComponent(document.getElementById('p9s-fid').value))">Ver resumen</button>
+        <div class="status-line" id="p9s-status"></div>
+        <pre class="result" id="p9s-result" style="display:none;"></pre>
+      </div>
+    </div>
+
+    <div class="card">
+      <h4 style="margin:0 0 6px;font-size:14px;">Reporte detallado de validaciones (JSON)</h4>
+      <div class="endpoint">
+        <span class="method GET">GET</span>
+        <code class="path">/api/v1/files/validation-report?file_id=&lt;id&gt;</code>
+      </div>
+      <div class="tryit">
+        <h5>Probar ahora</h5>
+        <div class="field"><label>file_id</label><input id="p9r-fid" /></div>
+        <button class="run" onclick="runCall('p9r', 'GET', '/api/v1/files/validation-report?file_id=' + encodeURIComponent(document.getElementById('p9r-fid').value))">Ver reporte</button>
+        <div class="status-line" id="p9r-status"></div>
+        <pre class="result" id="p9r-result" style="display:none;"></pre>
+      </div>
+    </div>
+
+    <div class="card">
+      <h4 style="margin:0 0 6px;font-size:14px;">Exportar a CSV / XLSX</h4>
+      <div class="endpoint">
+        <span class="method GET">GET</span>
+        <code class="path">/api/v1/files/validation-csv?file_id=&lt;id&gt;</code>
+      </div>
+      <div class="endpoint">
+        <span class="method GET">GET</span>
+        <code class="path">/api/v1/files/validation-xlsx?file_id=&lt;id&gt;</code>
+      </div>
+      <p style="font-size:13.5px;color:var(--muted);">
+        Ambos devuelven un attachment con nombre <code>novedades_&lt;file_name&gt;.[csv|xlsx]</code>.
+        Úsalos directo como <code>&lt;a href="..."&gt;</code> en la UI.
+      </p>
+      <div class="tryit">
+        <h5>Generar enlaces de descarga</h5>
+        <div class="field"><label>file_id</label><input id="p9d-fid" /></div>
+        <button class="run" onclick="(function(){const fid=document.getElementById('p9d-fid').value;const base=document.getElementById('baseUrl').value.replace(/\/$/,'');document.getElementById('p9d-result').style.display='block';document.getElementById('p9d-result').textContent='CSV:  '+base+'/api/v1/files/validation-csv?file_id='+encodeURIComponent(fid)+'\nXLSX: '+base+'/api/v1/files/validation-xlsx?file_id='+encodeURIComponent(fid);})()">Construir URLs</button>
+        <pre class="result" id="p9d-result" style="display:none;"></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== STEP 10: Policies ===== -->
+  <section id="paso-10">
+    <h2><span class="step-badge">10</span> Consultar pólizas</h2>
+    <p class="lead">Dos formas: <strong>búsqueda paginada</strong> (filtros combinables) y <strong>listado por producto</strong>
+    (más simple, opcional por estado).</p>
+
+    <div class="card">
+      <h4 style="margin:0 0 6px;font-size:14px;">Búsqueda paginada</h4>
+      <div class="endpoint">
+        <span class="method GET">GET</span>
+        <code class="path">/api/v1/policies/search</code>
+      </div>
+      <table>
+        <tr><th>Query</th><th>Descripción</th><th>Default</th></tr>
+        <tr><td><code>product_id</code></td><td>Filtra por producto. Si no se envía, se exige al menos uno de los siguientes.</td><td>—</td></tr>
+        <tr><td><code>credit_number</code></td><td>Número de crédito exacto.</td><td>—</td></tr>
+        <tr><td><code>document_number</code></td><td>Documento del asegurado.</td><td>—</td></tr>
+        <tr><td><code>page</code></td><td>Página (≥1).</td><td>1</td></tr>
+        <tr><td><code>page_size</code></td><td>Tamaño (1–200).</td><td>50</td></tr>
+        <tr><td><code>include_raw</code></td><td><code>true</code> añade <code>raw_data</code> en cada item.</td><td>false</td></tr>
+      </table>
+      <div class="tryit">
+        <h5>Probar ahora</h5>
+        <div class="field"><label>product_id</label><input id="p10s-pid" value="bolivar_vida_grupo" /></div>
+        <div class="field"><label>credit_number</label><input id="p10s-cn" /></div>
+        <div class="field"><label>document_number</label><input id="p10s-dn" /></div>
+        <div class="field"><label>page / page_size</label>
+          <input id="p10s-page" value="1" style="max-width:90px;" />
+          <input id="p10s-ps"   value="20" style="max-width:90px;" />
+          <label style="min-width:auto;"><input type="checkbox" id="p10s-raw" /> include_raw</label>
+        </div>
+        <button class="run" onclick="(function(){const q=new URLSearchParams();['p10s-pid','p10s-cn','p10s-dn'].forEach((id,i)=>{const v=document.getElementById(id).value.trim();const k=['product_id','credit_number','document_number'][i];if(v)q.set(k,v);});q.set('page',document.getElementById('p10s-page').value||'1');q.set('page_size',document.getElementById('p10s-ps').value||'20');if(document.getElementById('p10s-raw').checked)q.set('include_raw','true');runCall('p10s','GET','/api/v1/policies/search?'+q.toString());})()">Buscar</button>
+        <div class="status-line" id="p10s-status"></div>
+        <pre class="result" id="p10s-result" style="display:none;"></pre>
+      </div>
+    </div>
+
+    <div class="card">
+      <h4 style="margin:0 0 6px;font-size:14px;">Listado por producto</h4>
+      <div class="endpoint">
+        <span class="method GET">GET</span>
+        <code class="path">/api/v1/policies?product_id=&lt;id&gt;&amp;status=valid&amp;limit=100</code>
+      </div>
+      <p style="font-size:13.5px;color:var(--muted);">
+        <code>status</code> es opcional (<code>valid</code>, <code>invalid</code>...). <code>limit=0</code> o ausente devuelve todo.
+      </p>
+      <div class="tryit">
+        <h5>Probar ahora</h5>
+        <div class="field"><label>product_id</label><input id="p10l-pid" value="bolivar_vida_grupo" /></div>
+        <div class="field"><label>status</label><input id="p10l-st" placeholder="(opcional)" /></div>
+        <div class="field"><label>limit</label><input id="p10l-lim" value="20" /></div>
+        <button class="run" onclick="(function(){const q=new URLSearchParams({product_id:document.getElementById('p10l-pid').value});const s=document.getElementById('p10l-st').value;if(s)q.set('status',s);q.set('limit',document.getElementById('p10l-lim').value||'20');runCall('p10l','GET','/api/v1/policies?'+q.toString());})()">Listar</button>
+        <div class="status-line" id="p10l-status"></div>
+        <pre class="result" id="p10l-result" style="display:none;"></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Reference ===== -->
+  <section id="reference">
+    <h2>Referencia completa de endpoints</h2>
+    <div class="card" style="padding:0;">
+      <div class="ref-row" style="background:var(--panel-soft);font-weight:600;font-size:12px;text-transform:uppercase;color:var(--muted);">
+        <div>Método</div><div>Ruta</div><div>Propósito</div>
+      </div>
+      <div class="ref-row"><span class="method GET">GET</span><code>/api/v1/health</code><div>Liveness check.</div></div>
+      <div class="ref-row"><span class="method POST">POST</span><code>/api/v1/products</code><div>Crear / actualizar producto.</div></div>
+      <div class="ref-row"><span class="method GET">GET</span><code>/api/v1/products</code><div>Listar productos.</div></div>
+      <div class="ref-row"><span class="method POST">POST</span><code>/api/v1/product-formats</code><div>Crear / actualizar formato.</div></div>
+      <div class="ref-row"><span class="method GET">GET</span><code>/api/v1/product-formats?product_id=…</code><div>Listar formatos de un producto.</div></div>
+      <div class="ref-row"><span class="method PATCH">PATCH</span><code>/api/v1/product-formats/active</code><div>Activar / desactivar formato.</div></div>
+      <div class="ref-row"><span class="method POST">POST</span><code>/api/v1/product-formats/match-test</code><div>Simular matching para un archivo.</div></div>
+      <div class="ref-row"><span class="method GET">GET</span><code>/api/v1/products/allowed-premiums?product_id=…</code><div>Consultar primas permitidas.</div></div>
+      <div class="ref-row"><span class="method PUT">PUT</span><code>/api/v1/products/allowed-premiums</code><div>Reemplazar lista de primas.</div></div>
+      <div class="ref-row"><span class="method POST">POST</span><code>/api/v1/products/allowed-premiums</code><div>Añadir una sola prima.</div></div>
+      <div class="ref-row"><span class="method DELETE">DELETE</span><code>/api/v1/products/allowed-premiums?product_id=…&amp;premium=…</code><div>Borrar una prima (o todas si se omite <code>premium</code>).</div></div>
+      <div class="ref-row"><span class="method POST">POST</span><code>/api/v1/process/scan</code><div>Escanear origen y encolar archivos.</div></div>
+      <div class="ref-row"><span class="method GET">GET</span><code>/api/v1/process/progress</code><div>Snapshot de progreso por archivo.</div></div>
+      <div class="ref-row"><span class="method POST">POST</span><code>/api/v1/files/retry?file_id=…</code><div>Reencolar un archivo para reprocesar.</div></div>
+      <div class="ref-row"><span class="method GET">GET</span><code>/api/v1/files</code><div>Listar archivos registrados.</div></div>
+      <div class="ref-row"><span class="method GET">GET</span><code>/api/v1/files/summary?file_id=…</code><div>Resumen de calidad del archivo.</div></div>
+      <div class="ref-row"><span class="method GET">GET</span><code>/api/v1/files/validation-report?file_id=…</code><div>Reporte detallado en JSON.</div></div>
+      <div class="ref-row"><span class="method GET">GET</span><code>/api/v1/files/validation-csv?file_id=…</code><div>Exportar reporte en CSV.</div></div>
+      <div class="ref-row"><span class="method GET">GET</span><code>/api/v1/files/validation-xlsx?file_id=…</code><div>Exportar reporte en XLSX.</div></div>
+      <div class="ref-row"><span class="method GET">GET</span><code>/api/v1/files/download?file_id=…</code><div>Descargar archivo original archivado.</div></div>
+      <div class="ref-row"><span class="method GET">GET</span><code>/api/v1/policies/search</code><div>Búsqueda paginada con filtros.</div></div>
+      <div class="ref-row"><span class="method GET">GET</span><code>/api/v1/policies?product_id=…</code><div>Listado por producto.</div></div>
+      <div class="ref-row"><span class="method POST">POST</span><code>/api/v1/bootstrap/sample-products</code><div>Sembrar productos de ejemplo (demo).</div></div>
+    </div>
+  </section>
+
+  <!-- ===== Errors ===== -->
+  <section id="errors">
+    <h2>Códigos de error frecuentes</h2>
+    <div class="card">
+      <table>
+        <tr><th>HTTP</th><th>Cuándo aparece</th><th>Cómo resolver</th></tr>
+        <tr>
+          <td><strong>400</strong></td>
+          <td>Campos obligatorios vacíos (<code>id</code>, <code>code</code>, <code>product_id</code>, <code>file_id</code>, etc.) o JSON inválido.</td>
+          <td>Revisar el body. Si el error incluye <code>missing_fields</code>, completar esos campos del producto / formato.</td>
+        </tr>
+        <tr>
+          <td><strong>404</strong></td>
+          <td><code>file_id</code> inexistente, o archivo archivado faltante en disco.</td>
+          <td>Confirmar el ID con <code>GET /files</code>. Si el binario fue purgado, no es recuperable vía API.</td>
+        </tr>
+        <tr>
+          <td><strong>405</strong></td>
+          <td>Método HTTP no permitido en la ruta.</td>
+          <td>Verificar la tabla de referencia: cada ruta acepta solo los métodos listados.</td>
+        </tr>
+        <tr>
+          <td><strong>500</strong></td>
+          <td>Falla persistiendo en almacén (DB / FS).</td>
+          <td>Revisar logs del API; usualmente indica problema de conexión o permisos.</td>
+        </tr>
+        <tr>
+          <td><strong>502</strong></td>
+          <td><code>/process/scan</code> no pudo contactar el origen (SFTP / disco).</td>
+          <td>Verificar credenciales y conectividad de origen; revisar variables de entorno.</td>
+        </tr>
+      </table>
+    </div>
+  </section>
+
+  <p style="text-align:center;color:var(--muted);font-size:12.5px;margin-top:40px;">
+    Generado a partir de <code>services/api/main.go</code> · Busk Seguros
+  </p>
+
+  </main>
+</div>
+
+<script>
+  // ===== Copy buttons =====
+  document.querySelectorAll('pre.code .copy').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const pre = btn.parentElement;
+      const text = pre.innerText.replace(/^copiar\s*/, '');
+      navigator.clipboard.writeText(text);
+      const old = btn.textContent;
+      btn.textContent = '¡copiado!';
+      setTimeout(() => (btn.textContent = old), 1200);
+    });
+  });
+
+  // ===== Tabs =====
+  document.querySelectorAll('.tabs').forEach(tabBar => {
+    tabBar.querySelectorAll('.tab-btn').forEach(b => {
+      b.addEventListener('click', () => {
+        const targetId = b.dataset.tab;
+        const card = tabBar.closest('.card');
+        card.querySelectorAll('.tab-btn').forEach(x => x.classList.remove('active'));
+        card.querySelectorAll('.tab-panel').forEach(x => x.classList.remove('active'));
+        b.classList.add('active');
+        card.querySelector('#' + targetId).classList.add('active');
+      });
+    });
+  });
+
+  // ===== Health =====
+  function checkHealth() {
+    const base = document.getElementById('baseUrl').value.replace(/\/$/, '');
+    const dot = document.getElementById('healthDot');
+    const txt = document.getElementById('healthText');
+    dot.className = 'health-dot';
+    txt.textContent = 'verificando...';
+    fetch(base + '/api/v1/health').then(r => r.json()).then(j => {
+      dot.classList.add('ok');
+      txt.textContent = 'API ok · ' + (j.time || '');
+    }).catch(e => {
+      dot.classList.add('fail');
+      txt.textContent = 'no responde (' + e.message + ')';
+    });
+  }
+
+  // ===== Generic API caller =====
+  function runCall(prefix, method, path, bodyElId, bodyBuilder) {
+    const base = document.getElementById('baseUrl').value.replace(/\/$/, '');
+    const statusEl = document.getElementById(prefix + '-status');
+    const resultEl = document.getElementById(prefix + '-result');
+    statusEl.innerHTML = '<span class="pill">pendiente</span> ' + method + ' ' + path;
+    resultEl.style.display = 'none';
+
+    const init = { method, headers: { 'Content-Type': 'application/json' } };
+    if (bodyElId) {
+      try {
+        init.body = JSON.stringify(JSON.parse(document.getElementById(bodyElId).value));
+      } catch (e) {
+        statusEl.innerHTML = '<span class="pill err">JSON inválido</span> ' + e.message;
+        return;
+      }
+    } else if (bodyBuilder) {
+      init.body = bodyBuilder();
+    }
+
+    const t0 = performance.now();
+    fetch(base + path, init).then(async r => {
+      const ms = Math.round(performance.now() - t0);
+      const ct = r.headers.get('Content-Type') || '';
+      let body;
+      if (ct.includes('application/json')) {
+        body = await r.json();
+        body = JSON.stringify(body, null, 2);
+      } else {
+        body = await r.text();
+      }
+      const pillClass = r.ok ? 'ok' : (r.status >= 500 ? 'err' : 'warn');
+      statusEl.innerHTML =
+        '<span class="pill ' + pillClass + '">' + r.status + ' ' + r.statusText + '</span>' +
+        method + ' ' + path + ' · ' + ms + ' ms';
+      resultEl.style.display = 'block';
+      resultEl.textContent = body;
+    }).catch(e => {
+      statusEl.innerHTML = '<span class="pill err">red</span> ' + e.message;
+      resultEl.style.display = 'block';
+      resultEl.textContent = String(e);
+    });
+  }
+</script>
+
+</body>
+</html>

@@ -54,3 +54,17 @@ func Split(notes []string) (blocking, informative []string) {
 	}
 	return blocking, informative
 }
+
+// DisplayText quita prefijos técnicos para mostrar la novedad al cliente (Excel/correo).
+func DisplayText(n string) string {
+	n = strings.TrimSpace(n)
+	for _, p := range []string{PrefixIncidencia, PrefixInformativo} {
+		if strings.HasPrefix(n, p) {
+			return strings.TrimSpace(strings.TrimPrefix(n, p))
+		}
+	}
+	if strings.HasPrefix(strings.ToUpper(n), "NOVEDAD:") {
+		return strings.TrimSpace(n[7:])
+	}
+	return n
+}

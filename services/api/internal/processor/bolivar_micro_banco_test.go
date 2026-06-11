@@ -135,7 +135,7 @@ func TestMicroBancoAbrilArchivo_TodasLasFilas(t *testing.T) {
 			continue
 		}
 		totalFilas++
-		values := map[string]string{"_file_name": fileName, "product_code": "BOLIVAR_BANCO"}
+		values := map[string]string{"_file_name": fileName, "product_code": "BOLIVAR_INCLUSION_DEUDORES_BANCO"}
 		for field, col := range fieldToCol {
 			if col < len(row) {
 				values[field] = strings.TrimSpace(row[col])

@@ -164,15 +164,17 @@ Ambas comparten la misma lógica en el diagrama.
 | ID | Regla | Detalle según el diagrama |
 |----|--------|---------------------------|
 | E.1 | Prima desde deuda | **`DEUDA INICIAL` × %** = **`PRIMA MENSUAL`**. Código: `bolivar_rules.go` (`bolivarPrimaEsperada`). |
-| E.2 | Plazo calculado | Plazo en meses desde fechas de adjudicación y vencimiento (`bolivarPlazoCalculadoMeses`). |
+| E.2 | Plazo calculado | Plazo en meses desde fechas de adjudicación y vencimiento (`bolivarPlazoCalculadoMeses`). **Vigencia** en Excel Bolívar (celdas con guiones, p. ej. `01-20-22`): **mes/día/año**; si día y mes ≤ 12 y las lecturas difieren, se usa MDY y se informa en **Informes**. Serial Excel sin guiones se interpreta aparte. Excel API: **Datos archivo** = solo filas con fallo. **Correo**: **Incidencias** + **Informes**. |
 | E.3 | Plazo vs prima | Columna del diagrama; **no implementada** (el PDF no define la fórmula de comparación). |
 | E.4 | ¿Hay diferencia? | Si **sí** en E.1 o E.5 → la **observación** no vacía justifica; si está vacía → incidencia. |
 | E.5 | Plazo en días (**Nota 2**) | Días entre vencimiento y fin esperado según plazo calculado; **0** = correcto; si no, rama E.4. Tolerancia opcional vía `bolivar_plazo_dias_tolerance` (0 = estricto PDF). |
 | E.6 | Edad | Desglosar **`FECHA DE NACIMIENTO`** en años, meses y días. |
-| E.7 | Rango de edad | Entre **18 años** y **74 años 364 días** (equivalente a menor de 75 años según el texto del diagrama). |
+| E.7 | Rango de edad | Entre **18 años** y **75 años 364 días** (válido hasta el **día anterior** al cumpleaños 76; en API `age_max` = **75.997** + `age_max_days_before_birthday` = 1). La **fecha de nacimiento** se prueba en **día/mes/año** y **mes/día/año**; si **alguna** lectura cumple el rango en la fecha de adjudicación, la fila **no falla** por edad. |
 | E.8 | ¿Cumple edad? | Si **no** y **deuda > 20M** → **incidencia de edad** (bloquea carga). Si **no** y deuda **≤ 20M** → **no** se reporta edad fuera de rango (la fila continúa). No hay incidencia aparte solo por monto. **Nota 3**: excepciones formales de edad de ingreso. |
 | E.9 | `OP BT` | Formato condicional para **duplicados**; debe ser **ID único**. |
-| E.10 | `FECHA VENCIMIENTO ACTUAL` | Fechas en **mes/día/año** (MDY); ambigüedad se resuelve en silencio (sin nota en informe). Solo se reporta si la fecha es inválida o dispara regla (vencimiento &lt; mes facturación + prima &gt; 0 → revisar prima; prima = 0 → cancelación sin nota de fecha). |
+| E.10 | `FECHA VENCIMIENTO ACTUAL` | Mes de cargue **M** = mes del nombre del archivo (ENERO…DICIEMBRE). Para **cualquier** M: informar en **Informes** si vencimiento (mes/año) es **&lt; M** (mes **M−1 hacia atrás**: mayo→abril↓, abril→marzo↓, junio→mayo↓, …). Mes **M o posterior** no se informa. Prima &gt; 0; no bloquea la carga. |
+
+**Prima mensual = 0 (API):** en productos **BOLÍVAR** la semilla define `freeze_on_zero_premium` → estado **FROZEN** (informe, no bloquea el archivo). En **MAPFRE** no hay esa regla → **CANCELLED** (no va al informe de incidencias).
 
 ---
 

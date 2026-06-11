@@ -724,7 +724,7 @@ func validateProductConfig(p model.Product) []string {
 			"coverage_start_date",
 			"coverage_end_date",
 		)
-		if code == "MAPFRE_VIDA" {
+		if code == codeMapfreInclusionVidaVoluntario {
 			required = append(required, "initial_term_months")
 		}
 	case strings.HasPrefix(code, "BOLIVAR"):
@@ -944,15 +944,177 @@ func optionalPersonMappings() []model.FieldMap {
 	}
 }
 
+// Prefijos de archivo (match: UPPER(nombre) LIKE %prefijo%).
+// Lote SFTP abril 2026 (tools/sftpconnect/downloads): prefijo numérico = contrato/producto MAPFRE.
+// Cabezotes MAPFRE (Requerimiento conexiones API VF Nov 2025):
+//   108 · Anexo 1 · Vida voluntaria
+//   114 · Anexo 2 · AP Cáncer
+//   110 · Anexo 3 · AP Menores
+const (
+	contractMapfreVida   = "5024424900103" // cabezote 108 · Anexo 1 · VIDA_VOL RM-INCLUSION
+	contractMapfreAccMen = "5024524900101" // cabezote 110 · Anexo 3 · ACC MEN RM-INCLUSION
+	contractMapfreCancer = "5024524900103" // cabezote 114 · Anexo 2 · CANCER RM-INCLUSION
+
+	prefixMapfreInclusionVida      = "INCLUSION-VIDA"      // legado INCLUSION-VIDA-MAPFRE.xlsx
+	prefixMapfreInclusionVidaVF    = "VOL RM-INCLUSION"    // VF con FECHAACTIVACION
+	prefixMapfreInclusionVidaAbril = "VIDA_VOL RM-INCLUSION"
+	prefixMapfreInclusionAccMen    = "INCLUSION-ACCIDEMENOR"
+	prefixMapfreInclusionAccMenVF  = "ACC MEN RM-INCLUSION"
+	prefixMapfreInclusionCancer    = "INCLUSION-CANCER"
+	prefixMapfreInclusionCancerVF  = "CANCER RM-INCLUSION"
+	prefixMapfreStock              = "STOCK_MAPFRE"
+	prefixMapfreAnulacionMasiva    = "Anulacion masiva" // cancelaciones MAPFRE (plantilla; no confundir con Anexo 4 Bolívar)
+
+	prefixBolivarBancoMicro = "MICRO_BANCO"  // Anexo 4 · Deudores_Banco_Bolivar_MICRO_BANCO_*
+	prefixBolivarBancoPyme  = "Pyme_BANCO"   // Anexo 4 · Deudores_Banco_Bolivar__Pyme_BANCO_*
+	prefixBolivarEsalMicro  = "micro_ESAL"   // Anexo 5 · Deudores_ESAL_Bolivar_micro_ESAL_*
+	prefixBolivarEsalPyme   = "Pyme_ESAL"    // Anexo 5 · Deudores_ESAL_Bolivar_Pyme_ESAL_*
+	prefixBolivarStock      = "STOCK-"       // legado; no matchea STOCK_MAPFRE
+	prefixBolivarStockFebrero = "STOCK-FEBRE-BOLIVAR"
+)
+
+// IDs y códigos de producto (BD + informes). Alineados con docs/Requerimiento conexiones API_VF_Nov_25.docx.
+const (
+	pidMapfreInclusionVidaVoluntario  = "mapfre_inclusion_vida_voluntario"  // cabezote 108 · Anexo 1
+	codeMapfreInclusionVidaVoluntario = "MAPFRE_INCLUSION_VIDA_VOLUNTARIO" // cabezote 108 · Anexo 1
+
+	pidMapfreInclusionAPMenores  = "mapfre_inclusion_ap_menores"  // cabezote 110 · Anexo 3
+	codeMapfreInclusionAPMenores = "MAPFRE_INCLUSION_AP_MENORES" // cabezote 110 · Anexo 3
+
+	pidMapfreInclusionAPCancer  = "mapfre_inclusion_ap_cancer"  // cabezote 114 · Anexo 2
+	codeMapfreInclusionAPCancer = "MAPFRE_INCLUSION_AP_CANCER" // cabezote 114 · Anexo 2
+
+	pidMapfreStockCartera  = "mapfre_stock_cartera"  // stock MAPFRE (diagrama operativo; fuera de Etapa 1 voluntario)
+	codeMapfreStockCartera = "MAPFRE_STOCK_CARTERA"
+
+	pidMapfreAnulacionMasiva  = "mapfre_anulacion_masiva"  // cancelaciones MAPFRE (plantilla Anulacion masiva)
+	codeMapfreAnulacionMasiva = "MAPFRE_ANULACION_MASIVA"
+
+	pidBolivarInclusionDeudoresBanco  = "bolivar_inclusion_deudores_banco"  // Anexo 4 · Deudores_Banco_Bolivar
+	codeBolivarInclusionDeudoresBanco = "BOLIVAR_INCLUSION_DEUDORES_BANCO" // Anexo 4
+
+	// Stock Bolívar mensual + inclusiones ESAL (Anexo 5): mismo producto, distintos formatos.
+	pidBolivarDeudoresStockEsal  = "bolivar_deudores_stock_esal"  // Anexo 5 + stock mensual
+	codeBolivarDeudoresStockEsal = "BOLIVAR_DEUDORES_STOCK_ESAL" // Anexo 5 + stock mensual
+)
+
+// Primas permitidas en BD (catálogo + coherencia con tarifario en mapfre_plan.go).
+// SDD borrador (docs/sdd.md): VOLUNTARIO Plan1=6600; en archivos reales y diagrama API usan 8600.
+var (
+	// Voluntario (Vida) y Stock MAPFRE comparten tarifario Plan 1 / Plan 2.
+	mapfreVidaStockAllowedPremiums = []float64{8600, 17100}
+	mapfreAccMenAllowedPremiums    = []float64{7800, 7410, 10600, 10070}
+	mapfreCancerAllowedPremiums    = []float64{8500, 8075, 12000, 12350, 13000}
+)
+
+func mapfreInclusionBaseRules() []model.RuleConfig {
+	return []model.RuleConfig{
+		{Type: "required_not_empty", Field: "document_number"},
+		{Type: "required_not_empty", Field: "birth_date"},
+		{Type: "required_not_empty", Field: "credit_number"},
+		{Type: "number_gte", Field: "monthly_premium", Params: map[string]float64{"min": 0}},
+	}
+}
+
+func bolivarBancoRules() []model.RuleConfig {
+	return []model.RuleConfig{
+		{Type: "required_not_empty", Field: "credit_number"},
+		{Type: "number_gte", Field: "initial_debt_amount", Params: map[string]float64{"min": 0}},
+		{Type: "number_gte", Field: "monthly_premium", Params: map[string]float64{"min": 0}},
+		{Type: "freeze_on_zero_premium", Field: "monthly_premium"},
+	}
+}
+
+func seedBolivarRuleParams(st *store.Store, productID string) {
+	_ = st.UpsertProductRuleParam(productID, "debt_manual_threshold", "20000000")
+	_ = st.UpsertProductRuleParam(productID, "bolivar_prima_calc_tolerance", "1")
+	_ = st.UpsertProductRuleParam(productID, "bolivar_plazo_dias_tolerance", "31")
+	_ = st.UpsertProductRuleParam(productID, "bolivar_due_reference_month_offset", "-1")
+	_ = st.UpsertProductRuleParam(productID, "bolivar_validate_due_month", "1")
+	_ = st.UpsertProductRuleParam(productID, "age_min", "18")
+	_ = st.UpsertProductRuleParam(productID, "age_max", "75.997")
+	_ = st.UpsertProductRuleParam(productID, "age_max_days_before_birthday", "1")
+	_ = st.UpsertProductRuleParam(productID, "required_valid_date_fields_csv", "birth_date,activation_date,loan_award_date,loan_due_date_current")
+}
+
+func mapfreAccMenInclusionMappings() []model.FieldMap {
+	return append([]model.FieldMap{
+		{CanonicalField: "document_number", SourceHeader: "NUM DOCUM", Required: true},
+		{CanonicalField: "birth_date", SourceHeader: "FECHA NAC", Required: true},
+		{CanonicalField: "monthly_premium", SourceHeader: "PRIMA", Required: true},
+		{CanonicalField: "credit_number", SourceHeader: "NUMERO DE CREDITO", Required: true},
+		{CanonicalField: "activation_date", SourceHeader: "FECHA INICIO DE VIGENCIA", Required: true},
+		{CanonicalField: "coverage_start_date", SourceHeader: "FECHA INICIO DE VIGENCIA", Required: true},
+		{CanonicalField: "coverage_end_date", SourceHeader: "FECHAFINVIGENCIADERIESGO REAL", Required: true},
+		{CanonicalField: "plan_name", SourceHeader: "PLAN", Required: false},
+		{CanonicalField: "plan_code", SourceHeader: "COD PLAN", Required: false},
+		{CanonicalField: "insured_amount", SourceHeader: "VALOR ASEGURADO", Required: false},
+	}, optionalPersonMappings()...)
+}
+
+func mapfreCancerInclusionMappings() []model.FieldMap {
+	return append([]model.FieldMap{
+		{CanonicalField: "document_number", SourceHeader: "COD CEDULA", Required: true},
+		{CanonicalField: "birth_date", SourceHeader: "FECHA NAC", Required: true},
+		{CanonicalField: "monthly_premium", SourceHeader: "PRIMA", Required: true},
+		{CanonicalField: "credit_number", SourceHeader: "NUMERO DE CREDITO", Required: true},
+		{CanonicalField: "activation_date", SourceHeader: "FECHA INICIO DE VIGENCIA", Required: true},
+		{CanonicalField: "coverage_start_date", SourceHeader: "FECHA INICIO DE VIGENCIA", Required: true},
+		{CanonicalField: "coverage_end_date", SourceHeader: "FECHAFINVIGENCIADERIESGO REAL", Required: true},
+		{CanonicalField: "plan_name", SourceHeader: "PLAN", Required: false},
+		{CanonicalField: "plan_code", SourceHeader: "PLAN", Required: false},
+		{CanonicalField: "insured_amount", SourceHeader: "VALOR ASEGURADO", Required: false},
+	}, optionalPersonMappings()...)
+}
+
+// bolivarEsalMappings: Deudores ESAL (FECHA VENCIMIENTO sin "ACTUAL").
+func bolivarEsalMappings() []model.FieldMap {
+	return append([]model.FieldMap{
+		{CanonicalField: "document_number", SourceHeader: "IDENTIFICACION", Required: true},
+		{CanonicalField: "birth_date", SourceHeader: "FECHA DE NACIMIENTO", Required: true},
+		{CanonicalField: "credit_number", SourceHeader: "OP BT", Required: true},
+		{CanonicalField: "initial_debt_amount", SourceHeader: "DEUDA INICIAL", Required: true},
+		{CanonicalField: "monthly_premium", SourceHeader: "PRIMA MENSUAL", Required: true},
+		{CanonicalField: "rate_percent", SourceHeader: "%", Required: true},
+		{CanonicalField: "activation_date", SourceHeader: "FECHA ADJUDICACION", Required: true},
+		{CanonicalField: "loan_award_date", SourceHeader: "FECHA ADJUDICACION", Required: true},
+		{CanonicalField: "loan_due_date_current", SourceHeader: "FECHA VENCIMIENTO", Required: true},
+		{CanonicalField: "calculated_term", SourceHeader: "PLAZO CRÉDITO", Required: false},
+		{CanonicalField: "plan_code", SourceHeader: "CODIGO SEGURO", Required: false},
+		{CanonicalField: "office", SourceHeader: "OFICINA", Required: false},
+		{CanonicalField: "email", SourceHeader: "E-mail", Required: false},
+		{CanonicalField: "phone", SourceHeader: "Telefono", Required: false},
+		{CanonicalField: "gender", SourceHeader: "GENERO", Required: false},
+	}, optionalPersonMappings()...)
+}
+
+// mapfreVidaInclusionVFMappings: inclusiones con FECHAACTIVACION (febrero/abril VF, no solo inicio vigencia).
+func mapfreVidaInclusionVFMappings() []model.FieldMap {
+	return append([]model.FieldMap{
+		{CanonicalField: "document_number", SourceHeader: "IDENTIFICACIONAFILIADO", Required: true},
+		{CanonicalField: "birth_date", SourceHeader: "FECHANACIMIENTO", Required: true},
+		{CanonicalField: "monthly_premium", SourceHeader: "PRIMAMENSUALPERIODO", Required: true},
+		{CanonicalField: "credit_number", SourceHeader: "NUMEROPRESTAMO", Required: true},
+		{CanonicalField: "activation_date", SourceHeader: "FECHAACTIVACION", Required: true},
+		{CanonicalField: "coverage_start_date", SourceHeader: "FECHA INICIO DE VIGENCIA", Required: false},
+		{CanonicalField: "coverage_end_date", SourceHeader: "FECHAFINVIGENCIADERIESGO REAL", Required: true},
+		{CanonicalField: "initial_term_months", SourceHeader: "PLAZO INICIAL", Required: true},
+		{CanonicalField: "plan_name", SourceHeader: "NOMBREPLAN", Required: false},
+		{CanonicalField: "plan_code", SourceHeader: "CODIGO SEGURO", Required: false},
+		{CanonicalField: "insured_amount", SourceHeader: "VALORARECONOCER", Required: false},
+		{CanonicalField: "office", SourceHeader: "OFICINA", Required: false},
+	}, optionalPersonMappings()...)
+}
+
 func seed(st *store.Store) {
 	_ = st.UpsertGlobalRuleParam("date_layouts_csv", "2006-01-02,02/01/2006,2/1/2006,02-01-2006,2006/01/02,01/02/2006,01-02-06,1-2-06,01/02/06,1/2/06")
 	_ = st.UpsertGlobalRuleParam("mapfre_cancel_keywords_csv", "ANUL,TERMINAD,SINIEST")
 
 	st.UpsertProduct(model.Product{
-		ID:         "mapfre_vida",
-		Code:       "MAPFRE_VIDA",
+		ID:         pidMapfreInclusionVidaVoluntario,
+		Code:       codeMapfreInclusionVidaVoluntario,
 		Insurer:    "MAPFRE",
-		FilePrefix: "INCLUSION-VIDA-MAPFRE",
+		FilePrefix: prefixMapfreInclusionVida,
 		SheetName:  "Hoja1",
 		HeaderRow:  1,
 		Mappings: append([]model.FieldMap{
@@ -965,28 +1127,22 @@ func seed(st *store.Store) {
 			{CanonicalField: "initial_term_months", SourceHeader: "PLAZO INICIAL", Required: true},
 			{CanonicalField: "plan_name", SourceHeader: "NOMBREPLAN", Required: false},
 			{CanonicalField: "plan_code", SourceHeader: "CODIGO SEGURO", Required: false},
-			{CanonicalField: "insured_amount", SourceHeader: "VALOR ASEGURADO", Required: false},
+			{CanonicalField: "insured_amount", SourceHeader: "VALORARECONOCER", Required: false},
 		}...), optionalPersonMappings()...)...),
-		Rules: []model.RuleConfig{
-			{Type: "required_not_empty", Field: "document_number"},
-			{Type: "required_not_empty", Field: "birth_date"},
-			{Type: "required_not_empty", Field: "credit_number"},
-			{Type: "number_gte", Field: "monthly_premium", Params: map[string]float64{"min": 0}},
-			{Type: "freeze_on_zero_premium", Field: "monthly_premium"},
-		},
+		Rules: mapfreInclusionBaseRules(),
 	})
-	_ = st.UpsertAllowedPremiums("mapfre_vida", []float64{8600, 17100})
-	_ = st.UpsertProductRuleParam("mapfre_vida", "age_min", "18")
-	_ = st.UpsertProductRuleParam("mapfre_vida", "age_max", "75.997")
-	_ = st.UpsertProductRuleParam("mapfre_vida", "mapfre_require_current_month", "1")
-	_ = st.UpsertProductRuleParam("mapfre_vida", "mapfre_date_tolerance_days", "2")
-	_ = st.UpsertProductRuleParam("mapfre_vida", "age_max_days_before_birthday", "1")
-	_ = st.UpsertProductRuleParam("mapfre_vida", "required_valid_date_fields_csv", "birth_date,activation_date,coverage_start_date,coverage_end_date")
+	_ = st.UpsertAllowedPremiums(pidMapfreInclusionVidaVoluntario, mapfreVidaStockAllowedPremiums)
+	_ = st.UpsertProductRuleParam(pidMapfreInclusionVidaVoluntario, "age_min", "18")
+	_ = st.UpsertProductRuleParam(pidMapfreInclusionVidaVoluntario, "age_max", "75.997")
+	_ = st.UpsertProductRuleParam(pidMapfreInclusionVidaVoluntario, "mapfre_require_current_month", "1")
+	_ = st.UpsertProductRuleParam(pidMapfreInclusionVidaVoluntario, "mapfre_date_tolerance_days", "2")
+	_ = st.UpsertProductRuleParam(pidMapfreInclusionVidaVoluntario, "age_max_days_before_birthday", "1")
+	_ = st.UpsertProductRuleParam(pidMapfreInclusionVidaVoluntario, "required_valid_date_fields_csv", "birth_date,activation_date,coverage_start_date,coverage_end_date")
 	st.UpsertProductFormat(model.ProductFormat{
 		ID:         "mapfre_vida_fmt_default",
-		ProductID:  "mapfre_vida",
-		Name:       "default",
-		FilePrefix: "INCLUSION-VIDA-MAPFRE",
+		ProductID:  pidMapfreInclusionVidaVoluntario,
+		Name:       "Anexo 1 · cabezote 108 · default",
+		FilePrefix: prefixMapfreInclusionVida,
 		SheetName:  "Hoja1",
 		HeaderRow:  1,
 		Priority:   100,
@@ -1002,210 +1158,162 @@ func seed(st *store.Store) {
 			{CanonicalField: "initial_term_months", SourceHeader: "PLAZO INICIAL", Required: true},
 			{CanonicalField: "plan_name", SourceHeader: "NOMBREPLAN", Required: false},
 			{CanonicalField: "plan_code", SourceHeader: "CODIGO SEGURO", Required: false},
-			{CanonicalField: "insured_amount", SourceHeader: "VALOR ASEGURADO", Required: false},
+			{CanonicalField: "insured_amount", SourceHeader: "VALORARECONOCER", Required: false},
 		}, optionalPersonMappings()...),
-		Rules: []model.RuleConfig{
-			{Type: "required_not_empty", Field: "document_number"},
-			{Type: "required_not_empty", Field: "birth_date"},
-			{Type: "required_not_empty", Field: "credit_number"},
-			{Type: "number_gte", Field: "monthly_premium", Params: map[string]float64{"min": 0}},
-			{Type: "freeze_on_zero_premium", Field: "monthly_premium"},
-		},
+		Rules: mapfreInclusionBaseRules(),
 	})
 	st.UpsertProductFormat(model.ProductFormat{
 		ID:         "mapfre_vida_fmt_inclusion_febrero_2026_vf",
-		ProductID:  "mapfre_vida",
-		Name:       "inclusion febrero 2026 vf",
-		FilePrefix: "5024424900108_VOL RM-INCLUSION FEBRERO 2026_VF",
+		ProductID:  pidMapfreInclusionVidaVoluntario,
+		Name:       "Anexo 1 · cabezote 108 · VF (FECHAACTIVACION)",
+		FilePrefix: prefixMapfreInclusionVidaVF,
 		SheetName:  "Hoja1",
 		HeaderRow:  1,
 		Priority:   130,
 		Active:     true,
-		Mappings: append([]model.FieldMap{
-			{CanonicalField: "document_number", SourceHeader: "IDENTIFICACIONAFILIADO", Required: true},
-			{CanonicalField: "birth_date", SourceHeader: "FECHANACIMIENTO", Required: true},
-			{CanonicalField: "monthly_premium", SourceHeader: "PRIMAMENSUALPERIODO", Required: true},
-			{CanonicalField: "credit_number", SourceHeader: "NUMEROPRESTAMO", Required: true},
-			{CanonicalField: "activation_date", SourceHeader: "FECHAACTIVACION", Required: true},
-			{CanonicalField: "coverage_start_date", SourceHeader: "FECHA INICIO DE VIGENCIA", Required: false},
-			{CanonicalField: "coverage_end_date", SourceHeader: "FECHAFINVIGENCIADERIESGO REAL", Required: true},
-			{CanonicalField: "initial_term_months", SourceHeader: "PLAZO INICIAL", Required: true},
-			{CanonicalField: "plan_name", SourceHeader: "NOMBREPLAN", Required: false},
-			{CanonicalField: "plan_code", SourceHeader: "CODIGO SEGURO", Required: false},
-			{CanonicalField: "insured_amount", SourceHeader: "VALOR ASEGURADO", Required: false},
-			{CanonicalField: "office", SourceHeader: "OFICINA", Required: false},
-		}, optionalPersonMappings()...),
-		Rules: []model.RuleConfig{
-			{Type: "required_not_empty", Field: "document_number"},
-			{Type: "required_not_empty", Field: "birth_date"},
-			{Type: "required_not_empty", Field: "credit_number"},
-			{Type: "number_gte", Field: "monthly_premium", Params: map[string]float64{"min": 0}},
-			{Type: "freeze_on_zero_premium", Field: "monthly_premium"},
-		},
+		Mappings:   mapfreVidaInclusionVFMappings(),
+		Rules:      mapfreInclusionBaseRules(),
+	})
+	st.UpsertProductFormat(model.ProductFormat{
+		ID:         "mapfre_vida_fmt_contract",
+		ProductID:  pidMapfreInclusionVidaVoluntario,
+		Name:       "Anexo 1 · cabezote 108 · contrato 5024424900103",
+		FilePrefix: contractMapfreVida,
+		SheetName:  "Hoja1",
+		HeaderRow:  1,
+		Priority:   150,
+		Active:     true,
+		Mappings:   mapfreVidaInclusionVFMappings(),
+		Rules:      mapfreInclusionBaseRules(),
+	})
+	st.UpsertProductFormat(model.ProductFormat{
+		ID:         "mapfre_vida_fmt_inclusion_abril_2026",
+		ProductID:  pidMapfreInclusionVidaVoluntario,
+		Name:       "Anexo 1 · cabezote 108 · inclusion abril 2026 (VIDA_VOL)",
+		FilePrefix: prefixMapfreInclusionVidaAbril,
+		SheetName:  "Hoja1",
+		HeaderRow:  1,
+		Priority:   135,
+		Active:     true,
+		Mappings:   mapfreVidaInclusionVFMappings(),
+		Rules:      mapfreInclusionBaseRules(),
 	})
 
 	st.UpsertProduct(model.Product{
-		ID:         "mapfre_acc_men",
-		Code:       "MAPFRE_ACC_MEN",
+		ID:         pidMapfreInclusionAPMenores,
+		Code:       codeMapfreInclusionAPMenores,
 		Insurer:    "MAPFRE",
-		FilePrefix: "INCLUSION-ACCIDEMENOR-MAPFRE",
+		FilePrefix: prefixMapfreInclusionAccMen,
 		SheetName:  "Hoja1",
 		HeaderRow:  1,
-		Mappings: append([]model.FieldMap{
-			{CanonicalField: "document_number", SourceHeader: "NUM DOCUM", Required: true},
-			{CanonicalField: "birth_date", SourceHeader: "FECHA NAC", Required: true},
-			{CanonicalField: "monthly_premium", SourceHeader: "PRIMA", Required: true},
-			{CanonicalField: "credit_number", SourceHeader: "NUMERO DE CREDITO", Required: true},
-			{CanonicalField: "activation_date", SourceHeader: "FECHA INICIO DE VIGENCIA", Required: true},
-			{CanonicalField: "coverage_start_date", SourceHeader: "FECHA INICIO DE VIGENCIA", Required: true},
-			{CanonicalField: "coverage_end_date", SourceHeader: "FECHAFINVIGENCIADERIESGO REAL", Required: true},
-			{CanonicalField: "plan_name", SourceHeader: "PLAN", Required: false},
-			{CanonicalField: "plan_code", SourceHeader: "COD PLAN", Required: false},
-			{CanonicalField: "insured_amount", SourceHeader: "VALOR ASEGURADO", Required: false},
-		}, optionalPersonMappings()...),
-		Rules: []model.RuleConfig{
-			{Type: "required_not_empty", Field: "document_number"},
-			{Type: "required_not_empty", Field: "birth_date"},
-			{Type: "required_not_empty", Field: "credit_number"},
-			{Type: "number_gte", Field: "monthly_premium", Params: map[string]float64{"min": 0}},
-			{Type: "freeze_on_zero_premium", Field: "monthly_premium"},
-		},
+		Mappings:   mapfreAccMenInclusionMappings(),
+		Rules:      mapfreInclusionBaseRules(),
 	})
-	_ = st.UpsertAllowedPremiums("mapfre_acc_men", []float64{7800, 7410, 10600, 10070})
-	_ = st.UpsertProductRuleParam("mapfre_acc_men", "age_min", "18")
-	_ = st.UpsertProductRuleParam("mapfre_acc_men", "age_max", "65.997")
-	_ = st.UpsertProductRuleParam("mapfre_acc_men", "mapfre_require_current_month", "1")
-	_ = st.UpsertProductRuleParam("mapfre_acc_men", "mapfre_date_tolerance_days", "2")
-	_ = st.UpsertProductRuleParam("mapfre_acc_men", "age_max_days_before_birthday", "1")
-	_ = st.UpsertProductRuleParam("mapfre_acc_men", "required_valid_date_fields_csv", "birth_date,activation_date,coverage_start_date,coverage_end_date")
+	_ = st.UpsertAllowedPremiums(pidMapfreInclusionAPMenores, mapfreAccMenAllowedPremiums)
+	_ = st.UpsertProductRuleParam(pidMapfreInclusionAPMenores, "age_min", "18")
+	_ = st.UpsertProductRuleParam(pidMapfreInclusionAPMenores, "age_max", "65.997")
+	_ = st.UpsertProductRuleParam(pidMapfreInclusionAPMenores, "mapfre_require_current_month", "1")
+	_ = st.UpsertProductRuleParam(pidMapfreInclusionAPMenores, "mapfre_date_tolerance_days", "2")
+	_ = st.UpsertProductRuleParam(pidMapfreInclusionAPMenores, "age_max_days_before_birthday", "1")
+	_ = st.UpsertProductRuleParam(pidMapfreInclusionAPMenores, "required_valid_date_fields_csv", "birth_date,activation_date,coverage_start_date,coverage_end_date")
 	st.UpsertProductFormat(model.ProductFormat{
 		ID:         "mapfre_acc_men_fmt_default",
-		ProductID:  "mapfre_acc_men",
-		Name:       "default",
-		FilePrefix: "INCLUSION-ACCIDEMENOR-MAPFRE",
+		ProductID:  pidMapfreInclusionAPMenores,
+		Name:       "Anexo 3 · cabezote 110 · default",
+		FilePrefix: prefixMapfreInclusionAccMen,
 		SheetName:  "Hoja1",
 		HeaderRow:  1,
 		Priority:   100,
 		Active:     true,
-		Mappings: append([]model.FieldMap{
-			{CanonicalField: "document_number", SourceHeader: "NUM DOCUM", Required: true},
-			{CanonicalField: "birth_date", SourceHeader: "FECHA NAC", Required: true},
-			{CanonicalField: "monthly_premium", SourceHeader: "PRIMA", Required: true},
-			{CanonicalField: "credit_number", SourceHeader: "NUMERO DE CREDITO", Required: true},
-			{CanonicalField: "activation_date", SourceHeader: "FECHA INICIO DE VIGENCIA", Required: true},
-			{CanonicalField: "coverage_start_date", SourceHeader: "FECHA INICIO DE VIGENCIA", Required: true},
-			{CanonicalField: "coverage_end_date", SourceHeader: "FECHAFINVIGENCIADERIESGO REAL", Required: true},
-			{CanonicalField: "plan_name", SourceHeader: "PLAN", Required: false},
-			{CanonicalField: "plan_code", SourceHeader: "COD PLAN", Required: false},
-			{CanonicalField: "insured_amount", SourceHeader: "VALOR ASEGURADO", Required: false},
-		}, optionalPersonMappings()...),
-		Rules: []model.RuleConfig{
-			{Type: "required_not_empty", Field: "document_number"},
-			{Type: "required_not_empty", Field: "birth_date"},
-			{Type: "required_not_empty", Field: "credit_number"},
-			{Type: "number_gte", Field: "monthly_premium", Params: map[string]float64{"min": 0}},
-			{Type: "freeze_on_zero_premium", Field: "monthly_premium"},
-		},
+		Mappings:   mapfreAccMenInclusionMappings(),
+		Rules:      mapfreInclusionBaseRules(),
 	})
 	st.UpsertProductFormat(model.ProductFormat{
 		ID:         "mapfre_acc_men_fmt_inclusion_febrero_2026_vf",
-		ProductID:  "mapfre_acc_men",
-		Name:       "inclusion febrero 2026 vf",
-		FilePrefix: "5024525900109_110_ACC MEN RM-INCLUSION FEBRERO 2026_VF",
+		ProductID:  pidMapfreInclusionAPMenores,
+		Name:       "Anexo 3 · cabezote 110 · inclusion VF ACC MEN",
+		FilePrefix: prefixMapfreInclusionAccMenVF,
 		SheetName:  "Hoja1",
 		HeaderRow:  1,
 		Priority:   130,
 		Active:     true,
-		Mappings: append([]model.FieldMap{
-			{CanonicalField: "document_number", SourceHeader: "NUM DOCUM", Required: true},
-			{CanonicalField: "birth_date", SourceHeader: "FECHA NAC", Required: true},
-			{CanonicalField: "monthly_premium", SourceHeader: "PRIMA", Required: true},
-			{CanonicalField: "credit_number", SourceHeader: "NUMERO DE CREDITO", Required: true},
-			{CanonicalField: "activation_date", SourceHeader: "FECHA INICIO DE VIGENCIA", Required: true},
-			{CanonicalField: "coverage_start_date", SourceHeader: "FECHA INICIO DE VIGENCIA", Required: true},
-			{CanonicalField: "coverage_end_date", SourceHeader: "FECHAFINVIGENCIADERIESGO REAL", Required: true},
-			{CanonicalField: "plan_name", SourceHeader: "PLAN", Required: false},
-			{CanonicalField: "plan_code", SourceHeader: "COD PLAN", Required: false},
-			{CanonicalField: "insured_amount", SourceHeader: "VALOR ASEGURADO", Required: false},
-			{CanonicalField: "office", SourceHeader: "OFICINA", Required: false},
-		}, optionalPersonMappings()...),
-		Rules: []model.RuleConfig{
-			{Type: "required_not_empty", Field: "document_number"},
-			{Type: "required_not_empty", Field: "birth_date"},
-			{Type: "required_not_empty", Field: "credit_number"},
-			{Type: "number_gte", Field: "monthly_premium", Params: map[string]float64{"min": 0}},
-			{Type: "freeze_on_zero_premium", Field: "monthly_premium"},
-		},
+		Mappings: append(mapfreAccMenInclusionMappings(), model.FieldMap{
+			CanonicalField: "office", SourceHeader: "OFICINA", Required: false,
+		}),
+		Rules: mapfreInclusionBaseRules(),
+	})
+	st.UpsertProductFormat(model.ProductFormat{
+		ID:         "mapfre_acc_men_fmt_contract",
+		ProductID:  pidMapfreInclusionAPMenores,
+		Name:       "Anexo 3 · cabezote 110 · contrato 5024524900101",
+		FilePrefix: contractMapfreAccMen,
+		SheetName:  "Hoja1",
+		HeaderRow:  1,
+		Priority:   150,
+		Active:     true,
+		Mappings:   mapfreAccMenInclusionMappings(),
+		Rules:      mapfreInclusionBaseRules(),
 	})
 
 	st.UpsertProduct(model.Product{
-		ID:         "mapfre_cancer",
-		Code:       "MAPFRE_CANCER",
+		ID:         pidMapfreInclusionAPCancer,
+		Code:       codeMapfreInclusionAPCancer,
 		Insurer:    "MAPFRE",
-		FilePrefix: "INCLUSION-CANCER-MAPFRE",
+		FilePrefix: prefixMapfreInclusionCancer,
 		SheetName:  "Hoja1",
 		HeaderRow:  1,
-		Mappings: append([]model.FieldMap{
-			{CanonicalField: "document_number", SourceHeader: "COD CEDULA", Required: true},
-			{CanonicalField: "birth_date", SourceHeader: "FECHA NAC", Required: true},
-			{CanonicalField: "monthly_premium", SourceHeader: "PRIMA", Required: true},
-			{CanonicalField: "credit_number", SourceHeader: "NUMERO DE CREDITO", Required: true},
-			{CanonicalField: "activation_date", SourceHeader: "FECHA INICIO DE VIGENCIA", Required: true},
-			{CanonicalField: "coverage_start_date", SourceHeader: "FECHA INICIO DE VIGENCIA", Required: true},
-			{CanonicalField: "coverage_end_date", SourceHeader: "FECHAFINVIGENCIADERIESGO REAL", Required: true},
-			{CanonicalField: "plan_name", SourceHeader: "PLAN", Required: false},
-			{CanonicalField: "plan_code", SourceHeader: "PLAN", Required: false},
-			{CanonicalField: "insured_amount", SourceHeader: "VALOR ASEGURADO", Required: false},
-		}, optionalPersonMappings()...),
-		Rules: []model.RuleConfig{
-			{Type: "required_not_empty", Field: "document_number"},
-			{Type: "required_not_empty", Field: "birth_date"},
-			{Type: "required_not_empty", Field: "credit_number"},
-			{Type: "number_gte", Field: "monthly_premium", Params: map[string]float64{"min": 0}},
-			{Type: "freeze_on_zero_premium", Field: "monthly_premium"},
-		},
+		Mappings:   mapfreCancerInclusionMappings(),
+		Rules:      mapfreInclusionBaseRules(),
 	})
-	_ = st.UpsertAllowedPremiums("mapfre_cancer", []float64{8500, 12000})
-	_ = st.UpsertProductRuleParam("mapfre_cancer", "age_min", "18")
-	_ = st.UpsertProductRuleParam("mapfre_cancer", "age_max", "65.997")
-	_ = st.UpsertProductRuleParam("mapfre_cancer", "mapfre_require_current_month", "1")
-	_ = st.UpsertProductRuleParam("mapfre_cancer", "mapfre_date_tolerance_days", "2")
-	_ = st.UpsertProductRuleParam("mapfre_cancer", "age_max_days_before_birthday", "1")
-	_ = st.UpsertProductRuleParam("mapfre_cancer", "required_valid_date_fields_csv", "birth_date,activation_date,coverage_start_date,coverage_end_date")
+	_ = st.UpsertAllowedPremiums(pidMapfreInclusionAPCancer, mapfreCancerAllowedPremiums)
+	_ = st.UpsertProductRuleParam(pidMapfreInclusionAPCancer, "age_min", "18")
+	_ = st.UpsertProductRuleParam(pidMapfreInclusionAPCancer, "age_max", "65.997")
+	_ = st.UpsertProductRuleParam(pidMapfreInclusionAPCancer, "mapfre_require_current_month", "1")
+	_ = st.UpsertProductRuleParam(pidMapfreInclusionAPCancer, "mapfre_date_tolerance_days", "2")
+	_ = st.UpsertProductRuleParam(pidMapfreInclusionAPCancer, "age_max_days_before_birthday", "1")
+	_ = st.UpsertProductRuleParam(pidMapfreInclusionAPCancer, "required_valid_date_fields_csv", "birth_date,activation_date,coverage_start_date,coverage_end_date")
 	st.UpsertProductFormat(model.ProductFormat{
 		ID:         "mapfre_cancer_fmt_default",
-		ProductID:  "mapfre_cancer",
-		Name:       "default",
-		FilePrefix: "INCLUSION-CANCER-MAPFRE",
+		ProductID:  pidMapfreInclusionAPCancer,
+		Name:       "Anexo 2 · cabezote 114 · default",
+		FilePrefix: prefixMapfreInclusionCancer,
 		SheetName:  "Hoja1",
 		HeaderRow:  1,
 		Priority:   100,
 		Active:     true,
-		Mappings: append([]model.FieldMap{
-			{CanonicalField: "document_number", SourceHeader: "COD CEDULA", Required: true},
-			{CanonicalField: "birth_date", SourceHeader: "FECHA NAC", Required: true},
-			{CanonicalField: "monthly_premium", SourceHeader: "PRIMA", Required: true},
-			{CanonicalField: "credit_number", SourceHeader: "NUMERO DE CREDITO", Required: true},
-			{CanonicalField: "activation_date", SourceHeader: "FECHA INICIO DE VIGENCIA", Required: true},
-			{CanonicalField: "coverage_start_date", SourceHeader: "FECHA INICIO DE VIGENCIA", Required: true},
-			{CanonicalField: "coverage_end_date", SourceHeader: "FECHAFINVIGENCIADERIESGO REAL", Required: true},
-			{CanonicalField: "plan_name", SourceHeader: "PLAN", Required: false},
-			{CanonicalField: "plan_code", SourceHeader: "PLAN", Required: false},
-		}, optionalPersonMappings()...),
-		Rules: []model.RuleConfig{
-			{Type: "required_not_empty", Field: "document_number"},
-			{Type: "required_not_empty", Field: "birth_date"},
-			{Type: "required_not_empty", Field: "credit_number"},
-			{Type: "number_gte", Field: "monthly_premium", Params: map[string]float64{"min": 0}},
-			{Type: "freeze_on_zero_premium", Field: "monthly_premium"},
-		},
+		Mappings:   mapfreCancerInclusionMappings(),
+		Rules:      mapfreInclusionBaseRules(),
+	})
+	st.UpsertProductFormat(model.ProductFormat{
+		ID:         "mapfre_cancer_fmt_inclusion_abril",
+		ProductID:  pidMapfreInclusionAPCancer,
+		Name:       "Anexo 2 · cabezote 114 · inclusion CANCER RM abril",
+		FilePrefix: prefixMapfreInclusionCancerVF,
+		SheetName:  "Hoja1",
+		HeaderRow:  1,
+		Priority:   130,
+		Active:     true,
+		Mappings:   mapfreCancerInclusionMappings(),
+		Rules:      mapfreInclusionBaseRules(),
+	})
+	st.UpsertProductFormat(model.ProductFormat{
+		ID:         "mapfre_cancer_fmt_contract",
+		ProductID:  pidMapfreInclusionAPCancer,
+		Name:       "Anexo 2 · cabezote 114 · contrato 5024524900103",
+		FilePrefix: contractMapfreCancer,
+		SheetName:  "Hoja1",
+		HeaderRow:  1,
+		Priority:   150,
+		Active:     true,
+		Mappings:   mapfreCancerInclusionMappings(),
+		Rules:      mapfreInclusionBaseRules(),
 	})
 
 	st.UpsertProduct(model.Product{
-		ID:         "mapfre_stock",
-		Code:       "MAPFRE_STOCK",
+		ID:         pidMapfreStockCartera,
+		Code:       codeMapfreStockCartera,
 		Insurer:    "MAPFRE",
-		FilePrefix: "STOCK_MAPFRE",
+		FilePrefix: prefixMapfreStock,
 		SheetName:  "Hoja1",
 		HeaderRow:  1,
 		Mappings: append([]model.FieldMap{
@@ -1226,21 +1334,20 @@ func seed(st *store.Store) {
 			{Type: "required_not_empty", Field: "birth_date"},
 			{Type: "required_not_empty", Field: "credit_number"},
 			{Type: "number_gte", Field: "monthly_premium", Params: map[string]float64{"min": 0}},
-			{Type: "freeze_on_zero_premium", Field: "monthly_premium"},
 		},
 	})
-	_ = st.UpsertAllowedPremiums("mapfre_stock", []float64{8600, 17100})
-	_ = st.UpsertProductRuleParam("mapfre_stock", "age_min", "18")
-	_ = st.UpsertProductRuleParam("mapfre_stock", "age_max", "75.997")
-	_ = st.UpsertProductRuleParam("mapfre_stock", "mapfre_require_current_month", "1")
-	_ = st.UpsertProductRuleParam("mapfre_stock", "mapfre_date_tolerance_days", "2")
-	_ = st.UpsertProductRuleParam("mapfre_stock", "age_max_days_before_birthday", "1")
-	_ = st.UpsertProductRuleParam("mapfre_stock", "required_valid_date_fields_csv", "birth_date,activation_date,coverage_start_date,coverage_end_date")
+	_ = st.UpsertAllowedPremiums(pidMapfreStockCartera, mapfreVidaStockAllowedPremiums)
+	_ = st.UpsertProductRuleParam(pidMapfreStockCartera, "age_min", "18")
+	_ = st.UpsertProductRuleParam(pidMapfreStockCartera, "age_max", "75.997")
+	_ = st.UpsertProductRuleParam(pidMapfreStockCartera, "mapfre_require_current_month", "1")
+	_ = st.UpsertProductRuleParam(pidMapfreStockCartera, "mapfre_date_tolerance_days", "2")
+	_ = st.UpsertProductRuleParam(pidMapfreStockCartera, "age_max_days_before_birthday", "1")
+	_ = st.UpsertProductRuleParam(pidMapfreStockCartera, "required_valid_date_fields_csv", "birth_date,activation_date,coverage_start_date,coverage_end_date")
 	st.UpsertProductFormat(model.ProductFormat{
 		ID:         "mapfre_stock_fmt_default",
-		ProductID:  "mapfre_stock",
+		ProductID:  pidMapfreStockCartera,
 		Name:       "default",
-		FilePrefix: "STOCK_MAPFRE",
+		FilePrefix: prefixMapfreStock,
 		SheetName:  "Hoja1",
 		HeaderRow:  1,
 		Priority:   100,
@@ -1263,14 +1370,13 @@ func seed(st *store.Store) {
 			{Type: "required_not_empty", Field: "birth_date"},
 			{Type: "required_not_empty", Field: "credit_number"},
 			{Type: "number_gte", Field: "monthly_premium", Params: map[string]float64{"min": 0}},
-			{Type: "freeze_on_zero_premium", Field: "monthly_premium"},
 		},
 	})
 	st.UpsertProductFormat(model.ProductFormat{
-		ID:         "mapfre_stock_fmt_vf2_febrero_2026",
-		ProductID:  "mapfre_stock",
-		Name:       "stock vf2 febrero 2026",
-		FilePrefix: "STOCK_MAPFRE_Febrero_vf2_2026",
+		ID:         "mapfre_stock_fmt_vf2_reporte",
+		ProductID:  pidMapfreStockCartera,
+		Name:       "stock vf2 hoja Reporte",
+		FilePrefix: prefixMapfreStock,
 		SheetName:  "Reporte",
 		HeaderRow:  1,
 		Priority:   120,
@@ -1288,50 +1394,14 @@ func seed(st *store.Store) {
 			{CanonicalField: "insured_amount", SourceHeader: "VALOR ASEGURADO", Required: false},
 			{CanonicalField: "office", SourceHeader: "OFICINA", Required: false},
 		}, optionalPersonMappings()...),
-		Rules: []model.RuleConfig{
-			{Type: "required_not_empty", Field: "document_number"},
-			{Type: "required_not_empty", Field: "birth_date"},
-			{Type: "required_not_empty", Field: "credit_number"},
-			{Type: "number_gte", Field: "monthly_premium", Params: map[string]float64{"min": 0}},
-			{Type: "freeze_on_zero_premium", Field: "monthly_premium"},
-		},
-	})
-	st.UpsertProductFormat(model.ProductFormat{
-		ID:         "mapfre_stock_fmt_vf2_marzo_2026",
-		ProductID:  "mapfre_stock",
-		Name:       "stock vf2 marzo 2026",
-		FilePrefix: "STOCK_MAPFRE_Marzo_vf2_2026",
-		SheetName:  "Reporte",
-		HeaderRow:  1,
-		Priority:   120,
-		Active:     true,
-		Mappings: append([]model.FieldMap{
-			{CanonicalField: "document_number", SourceHeader: "COD DOCUM", Required: true},
-			{CanonicalField: "birth_date", SourceHeader: "FECHA NAC", Required: true},
-			{CanonicalField: "monthly_premium", SourceHeader: "PRIMA MENSUAL", Required: true},
-			{CanonicalField: "credit_number", SourceHeader: "NUMERO DE CREDITO", Required: true},
-			{CanonicalField: "activation_date", SourceHeader: "FECHA INICIO DE VIGENCIA", Required: true},
-			{CanonicalField: "coverage_start_date", SourceHeader: "FECHA INICIO DE VIGENCIA", Required: true},
-			{CanonicalField: "coverage_end_date", SourceHeader: "FECHAFINVIGENCIADERIESGO REAL CORRECTA FINAL", Required: true},
-			{CanonicalField: "plan_name", SourceHeader: "PLAN", Required: false},
-			{CanonicalField: "plan_code", SourceHeader: "CODIGO SEGURO", Required: false},
-			{CanonicalField: "insured_amount", SourceHeader: "VALOR ASEGURADO", Required: false},
-			{CanonicalField: "office", SourceHeader: "OFICINA", Required: false},
-		}, optionalPersonMappings()...),
-		Rules: []model.RuleConfig{
-			{Type: "required_not_empty", Field: "document_number"},
-			{Type: "required_not_empty", Field: "birth_date"},
-			{Type: "required_not_empty", Field: "credit_number"},
-			{Type: "number_gte", Field: "monthly_premium", Params: map[string]float64{"min": 0}},
-			{Type: "freeze_on_zero_premium", Field: "monthly_premium"},
-		},
+		Rules: mapfreInclusionBaseRules(),
 	})
 
 	st.UpsertProduct(model.Product{
-		ID:         "bolivar_stock",
-		Code:       "BOLIVAR_STOCK",
+		ID:         pidBolivarDeudoresStockEsal,
+		Code:       codeBolivarDeudoresStockEsal,
 		Insurer:    "BOLIVAR",
-		FilePrefix: "STOCK-",
+		FilePrefix: prefixBolivarStock,
 		HeaderRow:  1,
 		Mappings: append([]model.FieldMap{
 			{CanonicalField: "document_number", SourceHeader: "IDENTIFICACION", Required: true},
@@ -1345,26 +1415,14 @@ func seed(st *store.Store) {
 			{CanonicalField: "loan_due_date_current", SourceHeader: "FECHA VENCIMIENTO ACTUAL", Required: true},
 			{CanonicalField: "observacion", SourceHeader: "OBSERVACION", Required: false},
 		}, optionalPersonMappings()...),
-		Rules: []model.RuleConfig{
-			{Type: "required_not_empty", Field: "credit_number"},
-			{Type: "number_gte", Field: "initial_debt_amount", Params: map[string]float64{"min": 0}},
-			{Type: "number_gte", Field: "monthly_premium", Params: map[string]float64{"min": 0}},
-		},
+		Rules: bolivarBancoRules(),
 	})
-	_ = st.UpsertProductRuleParam("bolivar_stock", "debt_manual_threshold", "20000000")
-	_ = st.UpsertProductRuleParam("bolivar_stock", "bolivar_prima_calc_tolerance", "1")
-	_ = st.UpsertProductRuleParam("bolivar_stock", "bolivar_plazo_dias_tolerance", "31")
-	_ = st.UpsertProductRuleParam("bolivar_stock", "bolivar_due_reference_month_offset", "-1")
-	_ = st.UpsertProductRuleParam("bolivar_stock", "bolivar_validate_due_month", "1")
-	_ = st.UpsertProductRuleParam("bolivar_stock", "age_min", "18")
-	_ = st.UpsertProductRuleParam("bolivar_stock", "age_max", "75.997")
-	_ = st.UpsertProductRuleParam("bolivar_stock", "age_max_days_before_birthday", "1")
-	_ = st.UpsertProductRuleParam("bolivar_stock", "required_valid_date_fields_csv", "birth_date,activation_date,loan_award_date,loan_due_date_current")
+	seedBolivarRuleParams(st, pidBolivarDeudoresStockEsal)
 	st.UpsertProductFormat(model.ProductFormat{
 		ID:         "bolivar_stock_fmt_default",
-		ProductID:  "bolivar_stock",
-		Name:       "default",
-		FilePrefix: "STOCK-",
+		ProductID:  pidBolivarDeudoresStockEsal,
+		Name:       "stock Bolívar genérico (STOCK-)",
+		FilePrefix: prefixBolivarStock,
 		HeaderRow:  1,
 		Priority:   100,
 		Active:     true,
@@ -1380,17 +1438,13 @@ func seed(st *store.Store) {
 			{CanonicalField: "loan_due_date_current", SourceHeader: "FECHA VENCIMIENTO ACTUAL", Required: true},
 			{CanonicalField: "observacion", SourceHeader: "OBSERVACION", Required: false},
 		}, optionalPersonMappings()...),
-		Rules: []model.RuleConfig{
-			{Type: "required_not_empty", Field: "credit_number"},
-			{Type: "number_gte", Field: "initial_debt_amount", Params: map[string]float64{"min": 0}},
-			{Type: "number_gte", Field: "monthly_premium", Params: map[string]float64{"min": 0}},
-		},
+		Rules: bolivarBancoRules(),
 	})
 	st.UpsertProductFormat(model.ProductFormat{
 		ID:         "bolivar_stock_fmt_febre_2026_xls",
-		ProductID:  "bolivar_stock",
+		ProductID:  pidBolivarDeudoresStockEsal,
 		Name:       "stock febre bolivar 2026",
-		FilePrefix: "STOCK-FEBRE-BOLIVAR",
+		FilePrefix: prefixBolivarStockFebrero,
 		SheetName:  "FACTURACION FEBRERO 2026",
 		HeaderRow:  1,
 		Priority:   130,
@@ -1410,73 +1464,116 @@ func seed(st *store.Store) {
 			{CanonicalField: "office", SourceHeader: "OFICINA", Required: false},
 			{CanonicalField: "observacion", SourceHeader: "OBSERVACION", Required: false},
 		}, optionalPersonMappings()...),
+		Rules: bolivarBancoRules(),
+	})
+	st.UpsertProductFormat(model.ProductFormat{
+		ID:         "bolivar_deudores_fmt_esal_micro",
+		ProductID:  pidBolivarDeudoresStockEsal,
+		Name:       "Anexo 5 · deudores ESAL micro",
+		FilePrefix: prefixBolivarEsalMicro,
+		SheetName:  "Hoja1",
+		HeaderRow:  1,
+		Priority:   200,
+		Active:     true,
+		Mappings:   bolivarEsalMappings(),
+		Rules:      bolivarBancoRules(),
+	})
+	st.UpsertProductFormat(model.ProductFormat{
+		ID:         "bolivar_deudores_fmt_esal_pyme",
+		ProductID:  pidBolivarDeudoresStockEsal,
+		Name:       "Anexo 5 · deudores ESAL pyme",
+		FilePrefix: prefixBolivarEsalPyme,
+		SheetName:  "Hoja1",
+		HeaderRow:  1,
+		Priority:   190,
+		Active:     true,
+		Mappings:   bolivarEsalMappings(),
+		Rules:      bolivarBancoRules(),
+	})
+
+	// MAPFRE anulaciones masivas (hoja Plantilla; reglas i–iii en mapfre_cancel.go).
+	st.UpsertProduct(model.Product{
+		ID:         pidMapfreAnulacionMasiva,
+		Code:       codeMapfreAnulacionMasiva,
+		Insurer:    "MAPFRE",
+		FilePrefix: prefixMapfreAnulacionMasiva,
+		SheetName:  "Plantilla_Anulaciones Abril26",
+		HeaderRow:  1,
+		Mappings: []model.FieldMap{
+			{CanonicalField: "group_policy_number", SourceHeader: "NUMER PÓLIZA GRUPO", Required: false},
+			{CanonicalField: "policy_number", SourceHeader: "# PÓLIZA ACTUAL", Required: false},
+			{CanonicalField: "document_number", SourceHeader: "CEDULA CLIENTE", Required: true},
+			{CanonicalField: "credit_number", SourceHeader: "OPERACIÓN BANTOTAL", Required: true},
+			{CanonicalField: "cancellation_date", SourceHeader: "FEC_ANULA", Required: false},
+			{CanonicalField: "activation_date", SourceHeader: "FECHA DE ACTIVACIÓN", Required: true},
+			{CanonicalField: "coverage_end_date", SourceHeader: "FECHA PROYECTADA FIN DE VIGENCIA", Required: true},
+			{CanonicalField: "observacion", SourceHeader: "OBS", Required: false},
+		},
 		Rules: []model.RuleConfig{
+			{Type: "required_not_empty", Field: "document_number"},
 			{Type: "required_not_empty", Field: "credit_number"},
-			{Type: "number_gte", Field: "initial_debt_amount", Params: map[string]float64{"min": 0}},
-			{Type: "number_gte", Field: "monthly_premium", Params: map[string]float64{"min": 0}},
+			{Type: "required_not_empty", Field: "activation_date"},
+			{Type: "required_not_empty", Field: "coverage_end_date"},
 		},
 	})
 
-	// Normaliza productos al nuevo modelo (producto base + formatos).
-	// El prefijo y la estructura del archivo viven en product_formats.
-	st.UpsertProduct(model.Product{ID: "mapfre_vida", Code: "MAPFRE_VIDA", Insurer: "MAPFRE"})
-	st.UpsertProduct(model.Product{ID: "mapfre_acc_men", Code: "MAPFRE_ACC_MEN", Insurer: "MAPFRE"})
-	st.UpsertProduct(model.Product{ID: "mapfre_cancer", Code: "MAPFRE_CANCER", Insurer: "MAPFRE"})
-	st.UpsertProduct(model.Product{ID: "mapfre_stock", Code: "MAPFRE_STOCK", Insurer: "MAPFRE"})
-	st.UpsertProduct(model.Product{
-		ID:         "bolivar_banco",
-		Code:       "BOLIVAR_BANCO",
-		Insurer:    "BOLIVAR",
-		FilePrefix: "MICRO_BANCO",
+	st.UpsertProductFormat(model.ProductFormat{
+		ID:         "mapfre_anulacion_fmt_abril",
+		ProductID:  pidMapfreAnulacionMasiva,
+		Name:       "cancelaciones MAPFRE · plantilla anulaciones abril",
+		FilePrefix: prefixMapfreAnulacionMasiva,
+		SheetName:  "Plantilla_Anulaciones Abril26",
 		HeaderRow:  1,
-		Mappings:   bolivarBancoMappings(),
+		Priority:   100,
+		Active:     true,
+		Mappings: []model.FieldMap{
+			{CanonicalField: "group_policy_number", SourceHeader: "NUMER PÓLIZA GRUPO", Required: false},
+			{CanonicalField: "policy_number", SourceHeader: "# PÓLIZA ACTUAL", Required: false},
+			{CanonicalField: "document_number", SourceHeader: "CEDULA CLIENTE", Required: true},
+			{CanonicalField: "credit_number", SourceHeader: "OPERACIÓN BANTOTAL", Required: true},
+			{CanonicalField: "cancellation_date", SourceHeader: "FEC_ANULA", Required: false},
+			{CanonicalField: "activation_date", SourceHeader: "FECHA DE ACTIVACIÓN", Required: true},
+			{CanonicalField: "coverage_end_date", SourceHeader: "FECHA PROYECTADA FIN DE VIGENCIA", Required: true},
+			{CanonicalField: "observacion", SourceHeader: "OBS", Required: false},
+		},
 		Rules: []model.RuleConfig{
+			{Type: "required_not_empty", Field: "document_number"},
 			{Type: "required_not_empty", Field: "credit_number"},
-			{Type: "number_gte", Field: "initial_debt_amount", Params: map[string]float64{"min": 0}},
-			{Type: "number_gte", Field: "monthly_premium", Params: map[string]float64{"min": 0}},
+			{Type: "required_not_empty", Field: "activation_date"},
+			{Type: "required_not_empty", Field: "coverage_end_date"},
 		},
 	})
-	_ = st.UpsertProductRuleParam("bolivar_banco", "debt_manual_threshold", "20000000")
-	_ = st.UpsertProductRuleParam("bolivar_banco", "bolivar_prima_calc_tolerance", "1")
-	_ = st.UpsertProductRuleParam("bolivar_banco", "bolivar_plazo_dias_tolerance", "31")
-	_ = st.UpsertProductRuleParam("bolivar_banco", "bolivar_due_reference_month_offset", "-1")
-	_ = st.UpsertProductRuleParam("bolivar_banco", "bolivar_validate_due_month", "1")
-	_ = st.UpsertProductRuleParam("bolivar_banco", "age_min", "18")
-	_ = st.UpsertProductRuleParam("bolivar_banco", "age_max", "75.997")
-	_ = st.UpsertProductRuleParam("bolivar_banco", "age_max_days_before_birthday", "1")
-	_ = st.UpsertProductRuleParam("bolivar_banco", "required_valid_date_fields_csv", "birth_date,activation_date,loan_award_date,loan_due_date_current")
+
+	st.UpsertProduct(model.Product{
+		ID:         pidBolivarInclusionDeudoresBanco,
+		Code:       codeBolivarInclusionDeudoresBanco,
+		Insurer:    "BOLIVAR",
+		FilePrefix: prefixBolivarBancoMicro,
+		HeaderRow:  1,
+		Mappings:   bolivarBancoMappings(),
+		Rules:      bolivarBancoRules(),
+	})
+	seedBolivarRuleParams(st, pidBolivarInclusionDeudoresBanco)
 	st.UpsertProductFormat(model.ProductFormat{
-		ID:         "bolivar_banco_fmt_micro_abril",
-		ProductID:  "bolivar_banco",
-		Name:       "micro banco abril VF",
-		FilePrefix: "MICRO_BANCO",
+		ID:         "bolivar_banco_fmt_micro",
+		ProductID:  pidBolivarInclusionDeudoresBanco,
+		Name:       "Anexo 4 · deudores banco micro (MICRO_BANCO)",
+		FilePrefix: prefixBolivarBancoMicro,
 		HeaderRow:  1,
 		Priority:   200,
 		Active:     true,
 		Mappings:   bolivarBancoMappings(),
-		Rules: []model.RuleConfig{
-			{Type: "required_not_empty", Field: "credit_number"},
-			{Type: "number_gte", Field: "initial_debt_amount", Params: map[string]float64{"min": 0}},
-			{Type: "number_gte", Field: "monthly_premium", Params: map[string]float64{"min": 0}},
-		},
+		Rules:      bolivarBancoRules(),
 	})
-	// También archivos 1000004553301_MICRO_BANCO_MES_V1.xlsx del diagrama
 	st.UpsertProductFormat(model.ProductFormat{
-		ID:         "bolivar_banco_fmt_1000004553301",
-		ProductID:  "bolivar_banco",
-		Name:       "micro banco mes v1",
-		FilePrefix: "1000004553301_MICRO_BANCO",
+		ID:         "bolivar_banco_fmt_pyme",
+		ProductID:  pidBolivarInclusionDeudoresBanco,
+		Name:       "Anexo 4 · deudores banco pyme (Pyme_BANCO)",
+		FilePrefix: prefixBolivarBancoPyme,
 		HeaderRow:  1,
 		Priority:   190,
 		Active:     true,
 		Mappings:   bolivarBancoMappings(),
-		Rules: []model.RuleConfig{
-			{Type: "required_not_empty", Field: "credit_number"},
-			{Type: "number_gte", Field: "initial_debt_amount", Params: map[string]float64{"min": 0}},
-			{Type: "number_gte", Field: "monthly_premium", Params: map[string]float64{"min": 0}},
-		},
+		Rules:      bolivarBancoRules(),
 	})
-
-	st.UpsertProduct(model.Product{ID: "bolivar_stock", Code: "BOLIVAR_STOCK", Insurer: "BOLIVAR"})
-	st.UpsertProduct(model.Product{ID: "bolivar_banco", Code: "BOLIVAR_BANCO", Insurer: "BOLIVAR"})
 }

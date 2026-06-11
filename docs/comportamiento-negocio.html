@@ -1,0 +1,811 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Busk Seguros · Cómo se comporta el API a nivel de negocio</title>
+<style>
+  :root {
+    --bg-dark: #0b1220;
+    --bg-mid: #111c34;
+    --bg-light: #f8fafc;
+    --primary: #2563eb;
+    --primary-light: #60a5fa;
+    --accent: #10b981;
+    --accent-2: #f59e0b;
+    --accent-3: #a855f7;
+    --accent-4: #f43f5e;
+    --text-dark: #0f172a;
+    --text-mid: #475569;
+    --text-light: #f1f5f9;
+    --border: #e2e8f0;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+  body { background: var(--bg-dark); color: var(--text-light); overflow: hidden; }
+
+  .deck { position: relative; width: 100vw; height: 100vh; }
+  .slide {
+    position: absolute; inset: 0;
+    padding: 56px 72px;
+    display: none;
+    flex-direction: column;
+    justify-content: center;
+    animation: fadeIn 0.4s ease;
+    overflow: auto;
+  }
+  .slide.active { display: flex; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+  .bg-cover { background: radial-gradient(circle at 70% 30%, #1e3a8a 0%, var(--bg-dark) 65%); }
+  .bg-dark  { background: linear-gradient(135deg, var(--bg-dark) 0%, var(--bg-mid) 100%); }
+  .bg-light { background: var(--bg-light); color: var(--text-dark); }
+  .bg-config { background: linear-gradient(135deg, #1e3a8a 0%, #0b1220 100%); }
+  .bg-op { background: linear-gradient(135deg, #064e3b 0%, #0b1220 100%); }
+  .bg-audit { background: linear-gradient(135deg, #78350f 0%, #0b1220 100%); }
+  .bg-consume { background: linear-gradient(135deg, #581c87 0%, #0b1220 100%); }
+
+  .eyebrow {
+    font-size: 12px; letter-spacing: 0.22em; text-transform: uppercase;
+    color: var(--primary-light); margin-bottom: 14px; font-weight: 600;
+  }
+  .bg-light .eyebrow { color: var(--primary); }
+
+  h1.title { font-size: 56px; line-height: 1.05; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 18px; }
+  h2.title { font-size: 38px; line-height: 1.1; font-weight: 700; letter-spacing: -0.015em; margin-bottom: 14px; }
+  h3.title { font-size: 26px; line-height: 1.2; font-weight: 700; margin-bottom: 12px; }
+  p.lead { font-size: 19px; line-height: 1.5; max-width: 920px; color: rgba(241,245,249,0.85); }
+  .bg-light p.lead { color: var(--text-mid); }
+
+  /* === 3-column pattern: pregunta · capacidad · resultado === */
+  .qcr {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 18px;
+    margin-top: 30px;
+  }
+  .qcr .col {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 14px;
+    padding: 22px;
+    display: flex; flex-direction: column;
+  }
+  .bg-light .qcr .col { background: #fff; border-color: var(--border); box-shadow: 0 2px 12px rgba(15,23,42,0.04); }
+  .qcr .col .tag {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 11px; letter-spacing: 0.15em; text-transform: uppercase;
+    color: rgba(241,245,249,0.6); margin-bottom: 12px; font-weight: 700;
+  }
+  .bg-light .qcr .col .tag { color: var(--text-mid); }
+  .qcr .col.q .tag { color: #fda4af; }
+  .qcr .col.c .tag { color: var(--primary-light); }
+  .qcr .col.r .tag { color: #6ee7b7; }
+  .qcr .col h4 { font-size: 18px; line-height: 1.3; margin-bottom: 10px; font-weight: 700; }
+  .qcr .col p { font-size: 14px; line-height: 1.5; color: rgba(241,245,249,0.75); }
+  .bg-light .qcr .col p { color: var(--text-mid); }
+  .qcr .col code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px; background: rgba(0,0,0,0.3); padding: 2px 7px; border-radius: 4px;
+    display: inline-block; margin-top: 8px;
+  }
+  .bg-light .qcr .col code { background: var(--bg-light); color: var(--primary); border: 1px solid var(--border); }
+
+  /* === Capability rows (for the matrix slide) === */
+  .matrix {
+    width: 100%; margin-top: 20px;
+    border-radius: 12px; overflow: hidden;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.08);
+  }
+  .matrix .row {
+    display: grid;
+    grid-template-columns: 1.1fr 2fr 1.4fr;
+    padding: 12px 16px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    align-items: center;
+    font-size: 13.5px;
+  }
+  .matrix .row.header {
+    background: rgba(255,255,255,0.06);
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.12em;
+    color: rgba(241,245,249,0.6); font-weight: 700;
+  }
+  .matrix .row:last-child { border-bottom: 0; }
+  .matrix code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11.5px; background: rgba(0,0,0,0.4); padding: 2px 6px; border-radius: 4px;
+  }
+  .matrix .who {
+    display: inline-block; padding: 2px 9px; border-radius: 100px;
+    font-size: 11px; font-weight: 700;
+  }
+  .matrix .who.n { background: rgba(37,99,235,0.2); color: var(--primary-light); }
+  .matrix .who.o { background: rgba(16,185,129,0.2); color: #6ee7b7; }
+  .matrix .who.a { background: rgba(245,158,11,0.2); color: #fbbf24; }
+  .matrix .who.c { background: rgba(168,85,247,0.2); color: #d8b4fe; }
+
+  /* === Quadrant overview === */
+  .quadrants {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 20px;
+    margin-top: 28px;
+  }
+  .quad {
+    border-radius: 16px; padding: 26px;
+    border: 1px solid rgba(255,255,255,0.12);
+    position: relative; overflow: hidden;
+  }
+  .quad.q1 { background: linear-gradient(135deg, rgba(37,99,235,0.18), rgba(37,99,235,0.04)); }
+  .quad.q2 { background: linear-gradient(135deg, rgba(16,185,129,0.18), rgba(16,185,129,0.04)); }
+  .quad.q3 { background: linear-gradient(135deg, rgba(245,158,11,0.18), rgba(245,158,11,0.04)); }
+  .quad.q4 { background: linear-gradient(135deg, rgba(168,85,247,0.18), rgba(168,85,247,0.04)); }
+  .quad .icon-big {
+    font-size: 32px; width: 52px; height: 52px; border-radius: 12px;
+    background: rgba(255,255,255,0.1); display: flex; align-items: center; justify-content: center;
+    margin-bottom: 14px;
+  }
+  .quad h3 { font-size: 20px; margin-bottom: 6px; }
+  .quad .question { font-size: 14px; color: rgba(241,245,249,0.7); font-style: italic; margin-bottom: 12px; }
+  .quad ul { list-style: none; font-size: 13.5px; }
+  .quad ul li { padding: 4px 0; color: rgba(241,245,249,0.85); }
+  .quad ul li::before { content: "›  "; color: var(--primary-light); font-weight: 700; }
+
+  /* === Timeline === */
+  .timeline { margin-top: 32px; position: relative; padding-left: 30px; }
+  .timeline::before {
+    content: ""; position: absolute; left: 8px; top: 6px; bottom: 6px;
+    width: 2px; background: linear-gradient(180deg, var(--primary), var(--accent));
+  }
+  .timeline .item { margin-bottom: 18px; position: relative; }
+  .timeline .item::before {
+    content: ""; position: absolute; left: -29px; top: 4px;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: var(--primary); border: 3px solid var(--bg-dark);
+  }
+  .bg-light .timeline .item::before { border-color: var(--bg-light); }
+  .timeline .item .when { font-size: 12px; color: var(--primary-light); font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; }
+  .timeline .item h4 { font-size: 17px; margin: 4px 0 4px; }
+  .timeline .item p { font-size: 14px; color: rgba(241,245,249,0.75); }
+  .bg-light .timeline .item p { color: var(--text-mid); }
+  .timeline .item code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px; background: rgba(0,0,0,0.3); padding: 2px 7px; border-radius: 4px;
+    margin-top: 4px; display: inline-block;
+  }
+  .bg-light .timeline .item code { background: var(--bg-light); color: var(--primary); border: 1px solid var(--border); }
+
+  /* === KPI tiles === */
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 18px; margin-top: 28px; }
+  .kpi {
+    text-align: center; padding: 22px 14px;
+    background: rgba(16,185,129,0.08);
+    border: 1px solid rgba(16,185,129,0.25);
+    border-radius: 14px;
+  }
+  .kpi .big { font-size: 40px; font-weight: 800; color: var(--accent); line-height: 1; }
+  .kpi .lbl { font-size: 12.5px; margin-top: 8px; color: rgba(241,245,249,0.78); }
+
+  /* === Nav === */
+  .nav {
+    position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 12px; z-index: 100;
+    background: rgba(15,23,42,0.7); backdrop-filter: blur(8px);
+    padding: 8px 14px; border-radius: 100px;
+    border: 1px solid rgba(255,255,255,0.1);
+  }
+  .nav button {
+    background: rgba(255,255,255,0.1); color: #fff; border: 0;
+    width: 32px; height: 32px; border-radius: 50%; cursor: pointer;
+    font-size: 15px;
+  }
+  .nav button:hover { background: rgba(255,255,255,0.2); }
+  .nav .counter { font-size: 13px; color: rgba(255,255,255,0.85); min-width: 50px; text-align: center; }
+  .dots {
+    position: fixed; top: 18px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 5px; z-index: 100;
+  }
+  .dots .dot { width: 6px; height: 6px; border-radius: 50%; background: rgba(255,255,255,0.25); cursor: pointer; }
+  .dots .dot.active { background: var(--primary-light); width: 18px; border-radius: 4px; }
+  .slide-num {
+    position: fixed; top: 22px; right: 26px;
+    font-size: 11px; color: rgba(255,255,255,0.5); letter-spacing: 0.1em;
+    z-index: 100;
+  }
+  .footer-brand {
+    position: absolute; bottom: 24px; left: 72px;
+    font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase;
+    color: rgba(255,255,255,0.45);
+  }
+
+  @media print {
+    body { background: #fff; }
+    .deck { height: auto; width: 100%; }
+    .slide { display: flex !important; page-break-after: always; height: 100vh; }
+    .nav, .dots, .slide-num { display: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<div class="deck" id="deck">
+
+  <!-- ============ 1. Cover ============ -->
+  <section class="slide bg-cover active">
+    <div class="eyebrow">Comportamiento de negocio del API</div>
+    <h1 class="title">Cada endpoint resuelve<br/>una pregunta del negocio.</h1>
+    <p class="lead">No es una colección de servicios técnicos. Es un mapa: para cada cosa que el negocio
+    necesita decidir, configurar, operar, auditar o consultar, hay una capacidad que la cubre.</p>
+    <div class="footer-brand">Busk Seguros · Lectura ejecutiva del API</div>
+  </section>
+
+  <!-- ============ 2. The framework ============ -->
+  <section class="slide bg-dark">
+    <div class="eyebrow">Marco de lectura</div>
+    <h2 class="title">Tres preguntas para entender<br/>cualquier capacidad del API.</h2>
+    <div class="qcr">
+      <div class="col q">
+        <div class="tag">① Pregunta del negocio</div>
+        <h4>¿Qué quiere saber, decidir o cambiar el negocio?</h4>
+        <p>Es la duda real: "tengo un convenio nuevo", "¿esta póliza existe?", "¿qué llegó mal?". El API existe para responderla.</p>
+      </div>
+      <div class="col c">
+        <div class="tag">② Capacidad del API</div>
+        <h4>¿Qué endpoint y con qué comportamiento la atiende?</h4>
+        <p>El verbo HTTP es solo la mecánica. Lo importante es qué hace internamente: cataloga, valida, encola, reporta.</p>
+      </div>
+      <div class="col r">
+        <div class="tag">③ Resultado observable</div>
+        <h4>¿Qué ve el negocio después?</h4>
+        <p>Una entrada nueva en el catálogo, un archivo procesado, un Excel descargable, una póliza encontrada.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 3. Four quadrants ============ -->
+  <section class="slide bg-dark">
+    <div class="eyebrow">Mapa</div>
+    <h2 class="title">Cuatro cuadrantes de comportamiento.</h2>
+    <div class="quadrants">
+      <div class="quad q1">
+        <div class="icon-big">⚙</div>
+        <h3>Configurar</h3>
+        <p class="question">"¿Cómo monto una nueva línea sin pedirle nada a TI?"</p>
+        <ul>
+          <li>Catálogo de productos y formatos</li>
+          <li>Activación / pausa de convenios</li>
+          <li>Reglas tarifarias (primas)</li>
+          <li>Simulación antes de producción</li>
+        </ul>
+      </div>
+      <div class="quad q2">
+        <div class="icon-big">↻</div>
+        <h3>Operar</h3>
+        <p class="question">"¿Cómo proceso todo lo que llega sin tocar archivo por archivo?"</p>
+        <ul>
+          <li>Escaneo y encolado automático</li>
+          <li>Procesamiento paralelo en workers</li>
+          <li>Tablero de progreso en vivo</li>
+          <li>Reintento controlado por archivo</li>
+        </ul>
+      </div>
+      <div class="quad q3">
+        <div class="icon-big">⚐</div>
+        <h3>Auditar</h3>
+        <p class="question">"¿Cómo demuestro calidad y devuelvo novedades al partner?"</p>
+        <ul>
+          <li>Resumen de calidad por archivo</li>
+          <li>Reporte detallado de validaciones</li>
+          <li>Exporte CSV / Excel listo para enviar</li>
+          <li>Custodia del archivo original</li>
+        </ul>
+      </div>
+      <div class="quad q4">
+        <div class="icon-big">⌕</div>
+        <h3>Consumir</h3>
+        <p class="question">"¿Cómo respondo en segundos a un cliente, reclamo o auditor?"</p>
+        <ul>
+          <li>Búsqueda paginada por crédito o documento</li>
+          <li>Listado por producto y estado</li>
+          <li>Trazabilidad póliza → archivo origen</li>
+          <li>Monitoreo de disponibilidad</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 4. Cuadrante 1 — Configurar ============ -->
+  <section class="slide bg-config">
+    <div class="eyebrow">Cuadrante 1 · Configurar</div>
+    <h2 class="title">El negocio define el catálogo;<br/>el API lo entiende inmediato.</h2>
+    <div class="qcr">
+      <div class="col q">
+        <div class="tag">Pregunta</div>
+        <h4>"Tenemos un convenio nuevo con Bolívar mañana."</h4>
+        <p>Necesito que la plataforma reconozca los archivos del convenio sin esperar un despliegue.</p>
+      </div>
+      <div class="col c">
+        <div class="tag">Capacidad</div>
+        <h4>Alta de producto y formatos por catálogo.</h4>
+        <p>Un producto agrupa la línea de negocio. Cada formato describe cómo leer un archivo del convenio: prefijo, hoja, columnas, reglas.</p>
+        <code>POST /products</code><code>POST /product-formats</code>
+      </div>
+      <div class="col r">
+        <div class="tag">Resultado</div>
+        <h4>El convenio queda visible y operativo el mismo día.</h4>
+        <p>Próximo escaneo: los archivos del convenio se reconocen, se clasifican y empiezan a producir pólizas.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 5. Cuadrante 1 — Configurar (parte 2: control y simulación) ============ -->
+  <section class="slide bg-config">
+    <div class="eyebrow">Cuadrante 1 · Configurar</div>
+    <h2 class="title">Cambios reversibles<br/>y simulables.</h2>
+    <div class="qcr">
+      <div class="col q">
+        <div class="tag">Pregunta</div>
+        <h4>"El plan C entra en piloto. ¿Y si rompe lo demás?"</h4>
+        <p>Quiero probar antes de exponer a producción y poder apagar sin perder configuración.</p>
+      </div>
+      <div class="col c">
+        <div class="tag">Capacidad</div>
+        <h4>Activación reversible + simulador de matching.</h4>
+        <p>Activar/desactivar un formato sin borrarlo. Probar con cabeceras reales antes de cualquier procesamiento.</p>
+        <code>PATCH /product-formats/active</code><code>POST /product-formats/match-test</code>
+      </div>
+      <div class="col r">
+        <div class="tag">Resultado</div>
+        <h4>Cero sorpresas el día del corte.</h4>
+        <p>Negocio sabe de antemano qué archivos van a calzar, qué columnas faltan y qué formato gana en cada caso.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 6. Cuadrante 1 — Configurar (parte 3: primas) ============ -->
+  <section class="slide bg-config">
+    <div class="eyebrow">Cuadrante 1 · Configurar</div>
+    <h2 class="title">La regla tarifaria<br/>vive en el catálogo, no en el código.</h2>
+    <div class="qcr">
+      <div class="col q">
+        <div class="tag">Pregunta</div>
+        <h4>"¿Cómo garantizo que solo se cobren primas autorizadas?"</h4>
+        <p>Necesito una lista blanca de montos válidos por producto. Cualquier cosa fuera = revisión obligatoria.</p>
+      </div>
+      <div class="col c">
+        <div class="tag">Capacidad</div>
+        <h4>Lista blanca de primas por producto, editable en caliente.</h4>
+        <p>El negocio define los valores aceptados; el motor de validación los aplica desde el siguiente escaneo. No hay despliegue.</p>
+        <code>PUT /products/allowed-premiums</code><code>POST · GET · DELETE</code>
+      </div>
+      <div class="col r">
+        <div class="tag">Resultado</div>
+        <h4>Pólizas con primas no autorizadas se marcan automáticamente.</h4>
+        <p>Aparecen en el reporte de novedades. Operaciones revisa antes de aceptar la cobertura.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 7. Cuadrante 2 — Operar ============ -->
+  <section class="slide bg-op">
+    <div class="eyebrow">Cuadrante 2 · Operar</div>
+    <h2 class="title">Procesamiento desatendido,<br/>con visibilidad permanente.</h2>
+    <div class="qcr">
+      <div class="col q">
+        <div class="tag">Pregunta</div>
+        <h4>"Llegan 300 archivos al día. ¿Cómo evito tocarlos uno a uno?"</h4>
+        <p>Y, al mismo tiempo, ¿cómo sé en cualquier momento si algo está atascado?</p>
+      </div>
+      <div class="col c">
+        <div class="tag">Capacidad</div>
+        <h4>Escaneo + workers paralelos + snapshot en vivo.</h4>
+        <p>Un POST escanea el origen y encola todo nuevo. Varios workers procesan en paralelo. El progreso se consulta cuando se quiera.</p>
+        <code>POST /process/scan</code><code>GET  /process/progress</code>
+      </div>
+      <div class="col r">
+        <div class="tag">Resultado</div>
+        <h4>El equipo ve el avance archivo por archivo, en tiempo real.</h4>
+        <p>Cuántos completos, cuántos en curso, cuántos en cola, cuántos con error. Cero correos pidiendo estado.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 8. Cuadrante 2 — Operar (parte 2: reintento) ============ -->
+  <section class="slide bg-op">
+    <div class="eyebrow">Cuadrante 2 · Operar</div>
+    <h2 class="title">Un archivo falló.<br/>Reintentar es un click.</h2>
+    <div class="qcr">
+      <div class="col q">
+        <div class="tag">Pregunta</div>
+        <h4>"El archivo vino mal, pidieron que lo reenvíen corregido. ¿Y ahora?"</h4>
+        <p>No quiero borrar nada del histórico. Quiero reprocesar el nuevo sin perder el rastro del anterior.</p>
+      </div>
+      <div class="col c">
+        <div class="tag">Capacidad</div>
+        <h4>Reintento idempotente con nuevo identificador.</h4>
+        <p>El archivo se reencola y se procesa de nuevo. El registro anterior queda como histórico. Cada intento es trazable por separado.</p>
+        <code>POST /files/retry?file_id=…</code>
+      </div>
+      <div class="col r">
+        <div class="tag">Resultado</div>
+        <h4>Reproceso sin pérdida de auditoría.</h4>
+        <p>El antes y el después conviven. Cualquier auditor puede reconstruir qué pasó en cada intento.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 9. Cuadrante 3 — Auditar ============ -->
+  <section class="slide bg-audit">
+    <div class="eyebrow">Cuadrante 3 · Auditar</div>
+    <h2 class="title">Cada archivo,<br/>una huella de calidad.</h2>
+    <div class="qcr">
+      <div class="col q">
+        <div class="tag">Pregunta</div>
+        <h4>"¿Cómo le digo a Mapfre qué filas vinieron con problemas?"</h4>
+        <p>Y necesito que sea un archivo Excel listo para enviar, no un correo manual.</p>
+      </div>
+      <div class="col c">
+        <div class="tag">Capacidad</div>
+        <h4>Resumen ejecutivo + reporte detallado + exporte directo.</h4>
+        <p>Por cada archivo procesado se genera un summary (válidas, rechazadas, observadas) y un reporte de novedades en JSON, CSV y XLSX.</p>
+        <code>GET /files/summary</code><code>validation-report</code><code>csv · xlsx</code>
+      </div>
+      <div class="col r">
+        <div class="tag">Resultado</div>
+        <h4>Un Excel descargable con el nombre <code>novedades_…</code>.</h4>
+        <p>Se reenvía al partner, se anexa al ticket regulatorio, se archiva en compliance. Sin Excel intermedios hechos a mano.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 10. Cuadrante 3 — Auditar (parte 2: custodia) ============ -->
+  <section class="slide bg-audit">
+    <div class="eyebrow">Cuadrante 3 · Auditar</div>
+    <h2 class="title">Custodia del archivo original.<br/>Siempre recuperable.</h2>
+    <div class="qcr">
+      <div class="col q">
+        <div class="tag">Pregunta</div>
+        <h4>"El auditor pide ver exactamente lo que llegó del partner."</h4>
+        <p>No una versión transformada. El binario tal cual, con su nombre original.</p>
+      </div>
+      <div class="col c">
+        <div class="tag">Capacidad</div>
+        <h4>Almacenamiento del archivo entrante + descarga directa.</h4>
+        <p>El motor archiva cada archivo procesado. La descarga sirve el binario original con su nombre y extensión.</p>
+        <code>GET /files/download?file_id=…</code>
+      </div>
+      <div class="col r">
+        <div class="tag">Resultado</div>
+        <h4>Trazabilidad bit a bit.</h4>
+        <p>Mismo hash, mismo contenido, mismo nombre. Suficiente para cualquier requerimiento de auditoría o regulación.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 11. Cuadrante 4 — Consumir ============ -->
+  <section class="slide bg-consume">
+    <div class="eyebrow">Cuadrante 4 · Consumir</div>
+    <h2 class="title">Servicio al cliente,<br/>conciliación y reclamos.</h2>
+    <div class="qcr">
+      <div class="col q">
+        <div class="tag">Pregunta</div>
+        <h4>"El cliente reclama por su crédito 4471293. ¿Está cubierto?"</h4>
+        <p>Necesito responder en segundos, no en horas. Y ver de qué archivo origen viene la información.</p>
+      </div>
+      <div class="col c">
+        <div class="tag">Capacidad</div>
+        <h4>Búsqueda paginada por producto, crédito o documento.</h4>
+        <p>Filtros combinables, paginación hasta 200 ítems, opción de incluir datos crudos. Listado simple por producto para conciliación.</p>
+        <code>GET /policies/search</code><code>GET /policies</code>
+      </div>
+      <div class="col r">
+        <div class="tag">Resultado</div>
+        <h4>La póliza con su origen, prima, estado y validaciones.</h4>
+        <p>El asesor responde con certeza. El conciliador descarga el lote. El auditor enlaza al archivo origen.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 12. Matrix endpoint → behavior ============ -->
+  <section class="slide bg-dark">
+    <div class="eyebrow">Matriz</div>
+    <h2 class="title">Endpoint → comportamiento de negocio → quién lo consume.</h2>
+    <div class="matrix">
+      <div class="row header">
+        <div>Capacidad técnica</div>
+        <div>Comportamiento de negocio</div>
+        <div>Consumidor principal</div>
+      </div>
+      <div class="row"><code>POST /products</code><div>Da de alta una línea de negocio.</div><div><span class="who n">Negocio</span></div></div>
+      <div class="row"><code>POST /product-formats</code><div>Registra cómo se lee el archivo de un convenio/plan.</div><div><span class="who n">Negocio</span></div></div>
+      <div class="row"><code>PATCH .../active</code><div>Pausa o reactiva un convenio sin perder configuración.</div><div><span class="who n">Negocio</span></div></div>
+      <div class="row"><code>POST .../match-test</code><div>Simula sobre un archivo antes de tocar producción.</div><div><span class="who n">Negocio</span> <span class="who o">Operaciones</span></div></div>
+      <div class="row"><code>PUT /allowed-premiums</code><div>Define qué primas son aceptables; el resto se marca.</div><div><span class="who n">Negocio</span></div></div>
+      <div class="row"><code>POST /process/scan</code><div>Lanza el procesamiento desatendido del lote del día.</div><div><span class="who o">Operaciones</span></div></div>
+      <div class="row"><code>GET /process/progress</code><div>Da visibilidad en vivo: qué va completo, qué va con error.</div><div><span class="who o">Operaciones</span></div></div>
+      <div class="row"><code>POST /files/retry</code><div>Reprocesa un archivo corregido, sin borrar el histórico.</div><div><span class="who o">Operaciones</span></div></div>
+      <div class="row"><code>GET /files</code><div>Inventario completo de archivos recibidos y su estado.</div><div><span class="who o">Operaciones</span> <span class="who a">Auditoría</span></div></div>
+      <div class="row"><code>GET /files/summary</code><div>KPI de calidad por archivo: válidas / rechazadas / observadas.</div><div><span class="who o">Operaciones</span></div></div>
+      <div class="row"><code>GET /files/validation-*</code><div>Reporte de novedades para devolver al partner o a compliance.</div><div><span class="who a">Auditoría</span> <span class="who o">Operaciones</span></div></div>
+      <div class="row"><code>GET /files/download</code><div>Recupera el archivo tal cual fue recibido del origen.</div><div><span class="who a">Auditoría</span></div></div>
+      <div class="row"><code>GET /policies/search</code><div>Responde consultas por cliente, crédito o documento.</div><div><span class="who c">Servicio</span> <span class="who a">Auditoría</span></div></div>
+      <div class="row"><code>GET /policies</code><div>Listado por producto: conciliación, cartera, reportes.</div><div><span class="who c">Servicio</span></div></div>
+      <div class="row"><code>GET /health</code><div>Confirma disponibilidad del servicio para monitoreo.</div><div><span class="who o">Operaciones</span></div></div>
+    </div>
+  </section>
+
+  <!-- ============ 13. Current reality — Mapfre & Bolívar ============ -->
+  <section class="slide bg-dark">
+    <div class="eyebrow">El punto de partida — proceso actual</div>
+    <h2 class="title">Lo que el equipo hace hoy,<br/>cada mes, a mano.</h2>
+    <p class="lead">El diagrama actual de Mapfre y Bolívar revela docenas de pasos en Excel, scripts ad hoc y correos. Mismas reglas — diferentes productos — repetidas archivo por archivo.</p>
+    <div class="qcr" style="grid-template-columns: 1fr 1fr; margin-top: 22px;">
+      <div class="col" style="background: rgba(245,158,11,0.06); border-color: rgba(245,158,11,0.2);">
+        <div class="tag" style="color:#fbbf24;">Mapfre · proceso actual</div>
+        <h4 style="font-size:15px; margin-bottom: 8px;">Descarga + 13 etapas de control</h4>
+        <ol style="list-style: none; counter-reset: step; font-size: 12.5px; line-height: 1.55; color: rgba(241,245,249,0.85);">
+          <li style="padding: 2px 0;">① VPN del cliente + SFTP + descarga local</li>
+          <li style="padding: 2px 0;">② Abrir bases (<em>CANCER FINANCO, AP MENORES, AP VOLUNTARIO</em>)</li>
+          <li style="padding: 2px 0;">③ Copiar cada base en la hoja correspondiente del script</li>
+          <li style="padding: 2px 0;">④ Ejecutar script y guardar <code>CONTROL_ES_MES_AÑO</code></li>
+          <li style="padding: 2px 0;">⑤ Validar edad ingreso (18 → 75 años 364 días)</li>
+          <li style="padding: 2px 0;">⑥ Validar edad permanencia y planes válidos</li>
+          <li style="padding: 2px 0;">⑦ Validar fecha de vigencia y control de plazo</li>
+          <li style="padding: 2px 0;">⑧ Validar unicidad del número de crédito</li>
+          <li style="padding: 2px 0;">⑨ Cruzar cancelaciones contra <em>NUMER POLIZA GRUPO ANTERIOR</em></li>
+          <li style="padding: 2px 0;">⑩ Insertar columnas en el archivo de stock (108/113/114)</li>
+          <li style="padding: 2px 0;">⑪ Marcar siniestros (RUS) y re-emisiones</li>
+          <li style="padding: 2px 0;">⑫ Reporte de novedades por correo al cliente</li>
+          <li style="padding: 2px 0;">⑬ Enviar al ingeniero de Data + cargue a DaNu</li>
+        </ol>
+      </div>
+      <div class="col" style="background: rgba(245,158,11,0.06); border-color: rgba(245,158,11,0.2);">
+        <div class="tag" style="color:#fbbf24;">Bolívar · proceso actual</div>
+        <h4 style="font-size:15px; margin-bottom: 8px;">Descarga + 11 etapas de cálculo y control</h4>
+        <ol style="list-style: none; font-size: 12.5px; line-height: 1.55; color: rgba(241,245,249,0.85);">
+          <li style="padding: 2px 0;">① VPN del cliente + SFTP banco + descarga</li>
+          <li style="padding: 2px 0;">② Abrir bases (<em>Deudores Banco, Deudores ESAI, Pyme</em>)</li>
+          <li style="padding: 2px 0;">③ Calcular <code>DEUDA INICIAL × %</code> vs <code>PRIMA MENSUAL</code></li>
+          <li style="padding: 2px 0;">④ Agregar columna de plazo calculado</li>
+          <li style="padding: 2px 0;">⑤ Comparar plazo vs prima — validar diferencias</li>
+          <li style="padding: 2px 0;">⑥ Calcular días entre <em>FECHA ADJUDICACIÓN</em> y <em>VENCIMIENTO ACTUAL</em></li>
+          <li style="padding: 2px 0;">⑦ Validar edad entre 18 y 75 años 364 días</li>
+          <li style="padding: 2px 0;">⑧ Bifurcar por ¿Deuda &gt; 20M? + duplicados (<em>OP B1</em>)</li>
+          <li style="padding: 2px 0;">⑨ Validar fecha de vigencia del mes corriente</li>
+          <li style="padding: 2px 0;">⑩ Reportar novedades de edad por correo</li>
+          <li style="padding: 2px 0;">⑪ Guardar bases con controles en SFTP Bolívar + correo final</li>
+        </ol>
+      </div>
+    </div>
+    <p style="font-size: 13px; color: rgba(241,245,249,0.55); margin-top: 18px; text-align: center;">
+      Cada cliente nuevo añade su propio script, sus propias hojas, sus propias reglas. La complejidad crece convenio a convenio.
+    </p>
+  </section>
+
+  <!-- ============ 14. Mapping manual → API ============ -->
+  <section class="slide bg-dark">
+    <div class="eyebrow">De manual a configurado</div>
+    <h2 class="title">Cada paso del proceso actual<br/>tiene su equivalente en el API.</h2>
+    <p class="lead">Lo que antes vivía en un script de Excel y en correos manuales, ahora vive en el catálogo del API — visible, versionable y reutilizable entre clientes.</p>
+    <div class="matrix" style="margin-top: 18px;">
+      <div class="row header">
+        <div>Hoy — manual</div>
+        <div>Con el API — configurado</div>
+        <div>Endpoint</div>
+      </div>
+      <div class="row"><div>VPN + SFTP + descarga manual de bases</div><div>Escaneo programado del origen, encolado automático.</div><div><code>POST /process/scan</code></div></div>
+      <div class="row"><div>Abrir Excel y copiar bases a hojas específicas</div><div>Detección por <em>file_prefix</em> y <em>sheet_name</em> del formato registrado.</div><div><code>POST /product-formats</code></div></div>
+      <div class="row"><div>Ejecutar script de transformación a mano</div><div>Workers en paralelo aplican el mapeo declarado en el catálogo.</div><div><code>GET /process/progress</code></div></div>
+      <div class="row"><div>Validar edad mínima / máxima en cada hoja</div><div>Regla de rango definida una vez por formato (ingreso y permanencia).</div><div><code>rules[]</code> en formato</div></div>
+      <div class="row"><div>Validar planes válidos (Plan 1, Plan 2…)</div><div>Lista cerrada de valores aceptados, sin tocar código.</div><div><code>rules[]</code> en formato</div></div>
+      <div class="row"><div>Validar montos de prima a mano</div><div>Lista blanca de primas por producto, editable en caliente.</div><div><code>PUT /products/allowed-premiums</code></div></div>
+      <div class="row"><div>Calcular días entre <em>ADJUDICACIÓN</em> y <em>VENCIMIENTO</em></div><div>Cálculo derivado declarado en el mapeo del formato.</div><div><code>mappings[]</code> en formato</div></div>
+      <div class="row"><div>Cruzar cancelaciones con <em>NUMER POLIZA GRUPO ANTERIOR</em></div><div>Búsqueda por crédito, documento o producto en segundos.</div><div><code>GET /policies/search</code></div></div>
+      <div class="row"><div>Mantener archivo de stock (inclusiones / terminadas / siniestros)</div><div>Inventario de archivos y pólizas con estado consultable.</div><div><code>GET /files</code> · <code>GET /policies</code></div></div>
+      <div class="row"><div>Marcar siniestros (RUS) y re-emisiones a mano</div><div>Estado por póliza + reproceso controlado del archivo de origen.</div><div><code>POST /files/retry</code></div></div>
+      <div class="row"><div>Reporte de novedades por correo, en Excel armado a mano</div><div>Exporte directo, listo para enviar al cliente o al partner.</div><div><code>GET /files/validation-xlsx</code></div></div>
+      <div class="row"><div>Enviar al ingeniero de Data + cargue a DaNu</div><div>Datos estandarizados ya consultables desde el mismo API.</div><div><code>GET /policies/search</code></div></div>
+    </div>
+  </section>
+
+  <!-- ============ 15. The same clients — with the API ============ -->
+  <section class="slide bg-dark">
+    <div class="eyebrow">Los mismos clientes — con el API</div>
+    <h2 class="title">Las 24 etapas mensuales se vuelven<br/>cuatro acciones repetibles.</h2>
+    <p class="lead">Lo que el equipo hace cada mes para Mapfre y Bolívar — copiar bases, ejecutar scripts, validar a mano, armar correos — se reduce a un alta inicial y a una operación recurrente de minutos.</p>
+    <div class="qcr" style="grid-template-columns: 1fr 1fr; margin-top: 22px;">
+      <div class="col" style="background: rgba(16,185,129,0.07); border-color: rgba(16,185,129,0.25);">
+        <div class="tag" style="color:#6ee7b7;">Mapfre · con el API</div>
+        <h4 style="font-size:15px; margin-bottom: 8px;">13 etapas manuales → 4 acciones</h4>
+        <ol style="list-style: none; font-size: 12.5px; line-height: 1.6; color: rgba(241,245,249,0.9);">
+          <li style="padding: 6px 0; border-bottom: 1px dashed rgba(255,255,255,0.08);">
+            <strong style="color:#6ee7b7;">Una sola vez</strong> · registrar el producto y sus formatos<br/>
+            <span style="color: rgba(241,245,249,0.6);">VIDA VP, ACCIDENTES M, CANCER VP — un formato por hoja, con su <em>file_prefix</em> y mapeo.</span>
+          </li>
+          <li style="padding: 6px 0; border-bottom: 1px dashed rgba(255,255,255,0.08);">
+            <strong style="color:#6ee7b7;">Una sola vez</strong> · declarar reglas y primas autorizadas<br/>
+            <span style="color: rgba(241,245,249,0.6);">Edades (ingreso/permanencia), planes válidos, fechas de vigencia, unicidad de crédito.</span>
+          </li>
+          <li style="padding: 6px 0; border-bottom: 1px dashed rgba(255,255,255,0.08);">
+            <strong style="color:#6ee7b7;">Cada mes</strong> · disparar el procesamiento<br/>
+            <span style="color: rgba(241,245,249,0.6);">Los archivos del SFTP se descubren, clasifican y validan en paralelo.</span>
+          </li>
+          <li style="padding: 6px 0;">
+            <strong style="color:#6ee7b7;">Cada mes</strong> · descargar el reporte y enviarlo<br/>
+            <span style="color: rgba(241,245,249,0.6);">Un Excel <code>novedades_…</code> listo para el cliente. Sin armar correos.</span>
+          </li>
+        </ol>
+      </div>
+      <div class="col" style="background: rgba(16,185,129,0.07); border-color: rgba(16,185,129,0.25);">
+        <div class="tag" style="color:#6ee7b7;">Bolívar · con el API</div>
+        <h4 style="font-size:15px; margin-bottom: 8px;">11 etapas manuales → 4 acciones</h4>
+        <ol style="list-style: none; font-size: 12.5px; line-height: 1.6; color: rgba(241,245,249,0.9);">
+          <li style="padding: 6px 0; border-bottom: 1px dashed rgba(255,255,255,0.08);">
+            <strong style="color:#6ee7b7;">Una sola vez</strong> · registrar las estructuras como formatos<br/>
+            <span style="color: rgba(241,245,249,0.6);">Deudores Banco, Deudores ESAI, Pyme — con sus columnas calculadas (<em>DEUDA × %</em>, días entre fechas).</span>
+          </li>
+          <li style="padding: 6px 0; border-bottom: 1px dashed rgba(255,255,255,0.08);">
+            <strong style="color:#6ee7b7;">Una sola vez</strong> · declarar reglas y bifurcaciones<br/>
+            <span style="color: rgba(241,245,249,0.6);">Edad 18–75 y 364 días, deuda mayor a 20M, unicidad <em>OP B1</em>, fecha de vigencia del mes corriente.</span>
+          </li>
+          <li style="padding: 6px 0; border-bottom: 1px dashed rgba(255,255,255,0.08);">
+            <strong style="color:#6ee7b7;">Cada mes</strong> · scan automático<br/>
+            <span style="color: rgba(241,245,249,0.6);">Los archivos del SFTP banco entran sin intervención.</span>
+          </li>
+          <li style="padding: 6px 0;">
+            <strong style="color:#6ee7b7;">Cada mes</strong> · enviar bases con controles + inventario de mora<br/>
+            <span style="color: rgba(241,245,249,0.6);">Los exportes se publican al SFTP Bolívar y al correo del cliente.</span>
+          </li>
+        </ol>
+      </div>
+    </div>
+    <p style="font-size: 13px; color: rgba(241,245,249,0.6); margin-top: 18px; text-align: center;">
+      Las acciones recurrentes son las mismas para cualquier cliente nuevo. <strong style="color:#6ee7b7;">El catálogo absorbe la complejidad.</strong>
+    </p>
+  </section>
+
+  <!-- ============ 16. Day-in-the-life ============ -->
+  <section class="slide bg-dark">
+    <div class="eyebrow">Un día normal</div>
+    <h2 class="title">Cómo se ve la operación,<br/>hora por hora.</h2>
+    <div class="timeline">
+      <div class="item">
+        <div class="when">06:00</div>
+        <h4>Scan automatizado</h4>
+        <p>Un cron lanza <code>POST /process/scan</code>. El sistema descubre 47 archivos nuevos y los encola.</p>
+      </div>
+      <div class="item">
+        <div class="when">08:30 — Operaciones llega</div>
+        <h4>Revisión de progreso</h4>
+        <p>Abre el tablero, que consulta <code>GET /process/progress</code>. 42 completos, 4 en curso, 1 con error.</p>
+      </div>
+      <div class="item">
+        <div class="when">09:15</div>
+        <h4>Diagnóstico del archivo en error</h4>
+        <p><code>GET /files/summary</code> revela que faltaba la hoja "Polizas". Pide al partner reenviar.</p>
+      </div>
+      <div class="item">
+        <div class="when">11:00 — Llega el archivo corregido</div>
+        <h4>Reintento</h4>
+        <p><code>POST /files/retry</code>. El nuevo intento queda con identificador propio; el anterior queda como histórico.</p>
+      </div>
+      <div class="item">
+        <div class="when">14:00 — Auditoría pide reporte de mayo</div>
+        <h4>Exporte directo</h4>
+        <p><code>GET /files/validation-xlsx</code> entrega el Excel listo para enviar, sin tocar nada a mano.</p>
+      </div>
+      <div class="item">
+        <div class="when">16:30 — Reclamo de cliente</div>
+        <h4>Búsqueda inmediata</h4>
+        <p><code>GET /policies/search</code> por documento. La póliza aparece con su archivo origen y prima validada.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 14. Onboarding day ============ -->
+  <section class="slide bg-light">
+    <div class="eyebrow">Día de onboarding de un convenio nuevo</div>
+    <h2 class="title">De acuerdo comercial<br/>a procesamiento productivo, en horas.</h2>
+    <div class="timeline">
+      <div class="item">
+        <div class="when">10:00</div>
+        <h4>Acuerdo comercial cerrado</h4>
+        <p>Negocio recibe muestra del archivo y la estructura de columnas que enviará el nuevo convenio.</p>
+      </div>
+      <div class="item">
+        <div class="when">11:00</div>
+        <h4>Alta en catálogo</h4>
+        <p><code>POST /products</code> + <code>POST /product-formats</code>. El convenio queda registrado.</p>
+      </div>
+      <div class="item">
+        <div class="when">11:30</div>
+        <h4>Reglas tarifarias</h4>
+        <p><code>PUT /products/allowed-premiums</code> con los montos aceptados.</p>
+      </div>
+      <div class="item">
+        <div class="when">12:00</div>
+        <h4>Validación con archivo de muestra</h4>
+        <p><code>POST /product-formats/match-test</code>. Confirma que el formato gana y los campos requeridos están.</p>
+      </div>
+      <div class="item">
+        <div class="when">14:00</div>
+        <h4>Primer procesamiento en vivo</h4>
+        <p><code>POST /process/scan</code>. El archivo del convenio nuevo se procesa junto con los demás.</p>
+      </div>
+      <div class="item">
+        <div class="when">15:00 — Listo</div>
+        <h4>Convenio en producción</h4>
+        <p>Las pólizas son consultables, los reportes se generan. <strong>Cero líneas de código nuevas.</strong></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 15. Value summary ============ -->
+  <section class="slide bg-cover">
+    <div class="eyebrow">Lo que cambia para el negocio</div>
+    <h2 class="title">Cuatro comportamientos<br/>que antes no existían.</h2>
+    <div class="kpis">
+      <div class="kpi"><div class="big">Auto-servicio</div><div class="lbl">Negocio configura productos sin abrir tickets</div></div>
+      <div class="kpi"><div class="big">Tiempo real</div><div class="lbl">Visibilidad continua del procesamiento</div></div>
+      <div class="kpi"><div class="big">Auditable</div><div class="lbl">Cada archivo, intento y póliza son trazables</div></div>
+      <div class="kpi"><div class="big">Reversible</div><div class="lbl">Reintentos y pausas sin pérdida de historia</div></div>
+    </div>
+    <p class="lead" style="margin-top: 30px;">
+      No es solo procesar archivos más rápido. Es que la operación deje de depender de personas que recuerdan
+      cómo se procesaba cada uno.
+    </p>
+    <div class="footer-brand">Busk Seguros · Comportamiento de negocio</div>
+  </section>
+
+</div>
+
+<!-- ===== Navigation ===== -->
+<div class="slide-num" id="slideNum">01 / 18</div>
+<div class="dots" id="dots"></div>
+<div class="nav">
+  <button id="prevBtn" title="Anterior (←)">‹</button>
+  <span class="counter" id="counter">1 / 18</span>
+  <button id="nextBtn" title="Siguiente (→)">›</button>
+  <button id="fullBtn" title="Pantalla completa (F)" style="font-size:13px;">⛶</button>
+</div>
+
+<script>
+  const slides = document.querySelectorAll('.slide');
+  const total = slides.length;
+  let idx = 0;
+  const dotsEl = document.getElementById('dots');
+  const counterEl = document.getElementById('counter');
+  const slideNumEl = document.getElementById('slideNum');
+
+  for (let i = 0; i < total; i++) {
+    const d = document.createElement('div');
+    d.className = 'dot' + (i === 0 ? ' active' : '');
+    d.addEventListener('click', () => go(i));
+    dotsEl.appendChild(d);
+  }
+
+  function go(n) {
+    idx = (n + total) % total;
+    slides.forEach((s, i) => s.classList.toggle('active', i === idx));
+    dotsEl.querySelectorAll('.dot').forEach((d, i) => d.classList.toggle('active', i === idx));
+    counterEl.textContent = (idx + 1) + ' / ' + total;
+    slideNumEl.textContent = String(idx + 1).padStart(2, '0') + ' / ' + String(total).padStart(2, '0');
+  }
+
+  document.getElementById('prevBtn').addEventListener('click', () => go(idx - 1));
+  document.getElementById('nextBtn').addEventListener('click', () => go(idx + 1));
+  document.getElementById('fullBtn').addEventListener('click', () => {
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+    else document.exitFullscreen();
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') go(idx + 1);
+    else if (e.key === 'ArrowLeft' || e.key === 'PageUp') go(idx - 1);
+    else if (e.key === 'Home') go(0);
+    else if (e.key === 'End') go(total - 1);
+    else if (e.key === 'f' || e.key === 'F') document.getElementById('fullBtn').click();
+  });
+</script>
+
+</body>
+</html>

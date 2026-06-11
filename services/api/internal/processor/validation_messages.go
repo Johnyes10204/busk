@@ -62,6 +62,26 @@ func etiquetaCampoCanónico(field string) string {
 	}
 }
 
+// etiquetaCortaCampo nombres breves para novedades en informe/Excel.
+func etiquetaCortaCampo(canon string) string {
+	switch strings.TrimSpace(canon) {
+	case "loan_due_date_current":
+		return "VENCIMIENTO"
+	case "loan_award_date", "activation_date":
+		return "ADJUDICACIÓN"
+	case "birth_date":
+		return "NACIMIENTO"
+	case "monthly_premium":
+		return "PRIMA"
+	case "initial_debt_amount":
+		return "DEUDA"
+	case "rate_percent":
+		return "TASA"
+	default:
+		return strings.ToUpper(etiquetaCampoCanónico(canon))
+	}
+}
+
 func etiquetaEstadoPoliza(status string) string {
 	switch strings.ToUpper(strings.TrimSpace(status)) {
 	case "ACTIVE":
@@ -195,7 +215,7 @@ func mensajesFechasRequeridas(values map[string]string, cfg ruleRuntimeConfig) [
 		etiqueta := etiquetaCampoCanónico(f)
 		raw := strings.TrimSpace(values[f])
 		if raw == "" {
-			out = append(out, fmt.Sprintf("La «%s» es obligatoria y viene vacía.", etiqueta))
+			out = append(out, fmt.Sprintf("FALTA %s", strings.ToUpper(etiqueta)))
 			continue
 		}
 		if !dateParsedWithOrder(raw, cfg.DateLayouts, dateOrderDMY) && !dateParsedWithOrder(raw, cfg.DateLayouts, dateOrderMDY) {
@@ -206,59 +226,31 @@ func mensajesFechasRequeridas(values map[string]string, cfg ruleRuntimeConfig) [
 }
 
 func mensajeFechaNoValida(etiqueta, raw string) string {
-	msg := fmt.Sprintf(
-		"La «%s» no tiene un formato de fecha válido como día/mes/año ni como mes/día/año (valor en archivo: %s).",
-		etiqueta, strings.TrimSpace(raw),
-	)
-	if norm := normalizeDateRaw(raw); norm != "" && norm != strings.TrimSpace(raw) {
-		msg += fmt.Sprintf(" Tras normalizar el texto queda «%s»; revise espacios, hora o formato de celda en Excel.", norm)
-	}
-	return msg
+	_ = raw
+	return fmt.Sprintf("FECHA NO VÁLIDA: %s", strings.ToUpper(etiqueta))
 }
 
 func mensajeFechaNacimientoObligatoriaParaEdad() string {
-	return "La fecha de nacimiento es obligatoria para validar la edad de ingreso."
+	return "FALTA FECHA DE NACIMIENTO"
 }
 
 func mensajeFechaActivacionObligatoriaParaEdad() string {
-	return "La fecha de activación es obligatoria para validar la edad de ingreso (columna FECHAACTIVACION o FECHA INICIO DE VIGENCIA en el archivo)."
+	return "FALTA FECHA DE ACTIVACIÓN"
 }
 
 func mensajeFechaActivacionObligatoriaBolivar() string {
-	return "La fecha de adjudicación/activación del crédito es obligatoria para validar la edad (columna FECHA ADJUDICACION en el archivo)."
+	return "FALTA FECHA DE ADJUDICACIÓN"
 }
 
 func mensajeFechaActivacionNoCalculable(raw string, layouts []string, mapfreSheet bool, productCode string) string {
-	msg := fmt.Sprintf(
-		"No se pudo validar la edad: la fecha de activación «%s» no es válida.",
-		strings.TrimSpace(raw),
-	)
-	if mapfreSheet {
-		msg += " En archivos MAPFRE suele ir como mes/día/año (ej. 04-08-26 = 8 de abril de 2026)."
-	} else if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(productCode)), "BOLIVAR") {
-		msg += " En Bolívar use FECHA ADJUDICACION (fecha de activación del crédito); puede venir como serial Excel."
-	}
-	if norm := normalizeDateRaw(raw); norm != "" && norm != strings.TrimSpace(raw) {
-		msg += fmt.Sprintf(" Texto normalizado: «%s».", norm)
-	}
-	if t := parseAgeReferenceDate(raw, layouts, mapfreSheet, productCode); !t.IsZero() {
-		msg += fmt.Sprintf(" Interpretación: %s.", formatFechaCalendario(t))
-	}
-	return msg
+	_ = layouts
+	_ = mapfreSheet
+	_ = productCode
+	return fmt.Sprintf("FECHA ACTIVACIÓN NO VÁLIDA: %s", strings.TrimSpace(raw))
 }
 
 func mensajeEdadNoCalculable(birthRaw string) string {
-	msg := fmt.Sprintf(
-		"No se pudo calcular la edad: la fecha de nacimiento «%s» no es válida como día/mes/año ni como mes/día/año.",
-		strings.TrimSpace(birthRaw),
-	)
-	if norm := normalizeDateRaw(birthRaw); norm != "" && norm != strings.TrimSpace(birthRaw) {
-		msg += fmt.Sprintf(" Texto normalizado: «%s».", norm)
-	}
-	if t := fechaInterpretadaParaMensaje(birthRaw); !t.IsZero() {
-		msg += fmt.Sprintf(" Como mes/día/año se interpreta: %s.", formatFechaCalendario(t))
-	}
-	return msg
+	return fmt.Sprintf("FECHA NACIMIENTO NO VÁLIDA: %s", strings.TrimSpace(birthRaw))
 }
 
 // fechaInterpretadaParaMensaje devuelve la fecha si al menos un orden (DMY o MDY) parsea.
@@ -278,66 +270,32 @@ func formatAgeMaxYears(ageMax float64) string {
 }
 
 func mensajeEdadFueraDeRango(code string, d edadValidacionDetalle, ageMin, ageMax float64, _ int) string {
-	var b strings.Builder
-	maxYear := ageLimitMaxBirthdayYear(ageMax)
-	fmt.Fprintf(&b,
-		"La edad (%d años cumplidos) está fuera del rango permitido para el producto %s (mínimo %d años cumplidos; máximo hasta el día anterior al cumpleaños %d, equivalente a %s años 364 días).",
-		d.edadReportada, strings.TrimSpace(code), ageLimitMinInt(ageMin), maxYear, formatAgeMaxYears(ageMax),
+	_ = code
+	return fmt.Sprintf(
+		"REVISAR EDAD: %d AÑOS (PERMITIDO %d-%s)",
+		d.edadReportada,
+		ageLimitMinInt(ageMin),
+		formatAgeMaxYears(ageMax),
 	)
-	if raw := strings.TrimSpace(d.birthRaw); raw != "" {
-		fmt.Fprintf(&b, " Fecha de nacimiento en archivo: «%s».", raw)
-	}
-	refCal := formatFechaCalendario(d.ref)
-	fmt.Fprintf(&b, " Edad al momento de la activación")
-	if refCal != "" {
-		fmt.Fprintf(&b, " (%s)", refCal)
-	}
-	if v := strings.TrimSpace(d.refValorArchivo); v != "" {
-		fmt.Fprintf(&b, "; valor en archivo: «%s»", v)
-	}
-	b.WriteString(".")
-	appendEdadInterpretacion(&b, "día/mes/año", d.nacimientoDMY, d.edadDMY, d.fechaLimiteMaxDMY)
-	if !d.nacimientoMDY.IsZero() && (d.nacimientoDMY != d.nacimientoDMY || d.edadMDY != d.edadDMY) {
-		appendEdadInterpretacion(&b, "mes/día/año", d.nacimientoMDY, d.edadMDY, d.fechaLimiteMaxMDY)
-	}
-	return b.String()
 }
 
-func appendEdadInterpretacion(b *strings.Builder, orden string, nacimiento time.Time, edad int, fechaLimite time.Time) {
-	if nacimiento.IsZero() || edad < 0 {
-		return
-	}
-	fmt.Fprintf(b, " Con interpretación %s: nacimiento %s → %d años cumplidos",
-		orden, formatFechaCalendario(nacimiento), edad)
-	if !fechaLimite.IsZero() {
-		fmt.Fprintf(b, " (última fecha permitida: %s)", formatFechaCalendario(fechaLimite))
-	}
-	b.WriteString(".")
-}
 
 func mensajeCreditoDuplicadoEnArchivo(credit string, repeats, dupCredits, dupRows int) string {
-	return fmt.Sprintf(
-		"El número de crédito u operación «%s» se repite en este mismo archivo (%d veces en total; %d créditos con duplicado; %d filas duplicadas). Revise las filas indicadas en el informe.",
-		credit, repeats, dupCredits, dupRows,
-	)
+	_ = dupCredits
+	_ = dupRows
+	return fmt.Sprintf("OP BT DUPLICADO EN ARCHIVO: %s (%d VECES)", credit, repeats)
 }
 
 func mensajeCreditoDuplicadoHistorico() string {
-	return "El número de crédito u operación ya existe en pólizas procesadas anteriormente (duplicado histórico)."
+	return "OP BT DUPLICADO: YA PROCESADO"
 }
 
 func mensajeCreditoDuplicadoEnArchivoPorFila(credit, filas string) string {
-	return fmt.Sprintf(
-		"El número de crédito u operación «%s» aparece más de una vez en este archivo. Filas del archivo donde consta: %s.",
-		credit, filas,
-	)
+	return fmt.Sprintf("OP BT DUPLICADO: %s (FILAS %s)", credit, filas)
 }
 
 func mensajeVencimientoMesPasado(mesMinimoAnio, mesMinimo int) string {
-	return fmt.Sprintf(
-		"La fecha de vencimiento actual del crédito es anterior al mes de facturación cargado (mes vencido %02d/%d); el vencimiento debe ser de ese mes o de un mes posterior (no se valida por día de procesamiento).",
-		mesMinimo, mesMinimoAnio,
-	)
+	return fmt.Sprintf("FECHA NO SE ADMITE: ANTERIOR AL MES %02d/%d", mesMinimo, mesMinimoAnio)
 }
 
 func mensajeBolivarVencimientoMesAnteriorAlCargue(
@@ -347,28 +305,14 @@ func mensajeBolivarVencimientoMesAnteriorAlCargue(
 	cargueMonth time.Month,
 	prima float64,
 ) string {
-	dueC := campoDesdeValues(values, "loan_due_date_current")
-	primaC := campoDesdeValues(values, "monthly_premium")
-	antYear, antMonth := bolivarMesAnteriorInmediato(cargueYear, cargueMonth)
-	var aviso string
+	_ = values
+	_ = due
 	if prima == 0 {
-		aviso = "Póliza congelada (prima en cero) con vencimiento anterior al mes de cargue. No bloquea la importación."
-	} else {
-		aviso = fmt.Sprintf(
-			"El archivo corresponde al cargue de %s. La fecha de vencimiento cae en %s (anterior al mes de cargue: se informan %s y todos los meses previos). Revise la prima mensual. No bloquea la importación.",
-			mesAnioRef(cargueYear, cargueMonth),
-			mesAnioRef(due.Year(), due.Month()),
-			mesAnioRef(antYear, antMonth),
-		)
+		return "VENCIMIENTO: ANTERIOR AL MES DE CARGUE (PRIMA CERO)"
 	}
-	msg := aviso
-	return mensajeConContexto(
-		msg,
-		lineaColumnaValor(dueC),
-		lineaValorUsado(FormatDateCanonical(due)),
-		lineaColumnaValor(primaC),
-		lineaReferencia("mes de cargue del archivo "+mesAnioRef(cargueYear, cargueMonth)),
-		archivoFacturacionRef(values),
+	return fmt.Sprintf(
+		"FECHA NO SE ADMITE: ANTERIOR AL MES DE CARGUE (%s)",
+		mesAnioRef(cargueYear, cargueMonth),
 	)
 }
 
@@ -384,72 +328,43 @@ func mensajeBolivarRevisarPrimaVencimientoInferior(
 }
 
 func mensajeBolivarPrimaCeroVencimientoInferior(mesFactAnio, mesFact int) string {
-	return fmt.Sprintf(
-		"Vencimiento anterior al mes de facturación (%02d/%d) con prima mensual en cero: la póliza se marca como cancelada (sin incidencia por fecha de vencimiento).",
-		mesFact, mesFactAnio,
-	)
+	return fmt.Sprintf("VENCIMIENTO: ANTERIOR AL MES %02d/%d (PRIMA CERO)", mesFact, mesFactAnio)
 }
 
-func mensajeFechaBolivarAmbiguaDMY(campo, raw string, dmy, mdy time.Time) string {
+func mensajeFechaBolivarAmbiguaMDY(campo, raw string, dmy, mdy time.Time) string {
+	_ = raw
+	_ = dmy
 	return fmt.Sprintf(
-		"%s: «%s» admite dos lecturas (%s día/mes/año o %s mes/día/año); se aplicó mes/día/año (formato inclusiones Bolívar en Excel). Corrija en origen si la lectura no es la esperada.",
-		etiquetaCampoCanónico(campo),
-		raw,
-		FormatDateCanonical(dmy),
+		"REVISAR FECHA %s: AMBIGUA (USADO %s)",
+		etiquetaCortaCampo(campo),
 		FormatDateCanonical(mdy),
 	)
 }
 
 func mensajeFechaBolivarInvalida(values map[string]string, canon string) string {
-	c := campoDesdeValues(values, canon)
-	return mensajeConContexto(
-		fmt.Sprintf("%s: no se pudo interpretar la fecha en inclusiones Bolívar (use mes/día/año MM-DD-AAAA o serial Excel).", etiquetaCampoCanónico(canon)),
-		lineaColumnaValor(c),
-	)
+	_ = values
+	return fmt.Sprintf("FECHA NO VÁLIDA: %s", etiquetaCortaCampo(canon))
 }
 
 func mensajeFechaBolivarNoInterpretable(values map[string]string, canon string) string {
-	c := campoDesdeValues(values, canon)
-	return mensajeConContexto(
-		fmt.Sprintf("%s: fecha ambigua (día y mes ≤ 12); indique formato mes/día/año.", etiquetaCampoCanónico(canon)),
-		lineaColumnaValor(c),
-		lineaReferencia("convención inclusiones Bolívar: mes/día/año (celdas con guiones)"),
-	)
+	_ = values
+	return fmt.Sprintf("FECHA AMBIGUA: %s", etiquetaCortaCampo(canon))
 }
 
 func mensajeVencimientoMenorAdjudicacion(values map[string]string, adj, due time.Time) string {
-	adjC := campoDesdeValues(values, "loan_award_date")
-	if adjC.Valor == "" {
-		adjC = campoDesdeValues(values, "activation_date")
-	}
-	dueC := campoDesdeValues(values, "loan_due_date_current")
-	return mensajeConContexto(
-		"La fecha de vencimiento es anterior a la fecha de adjudicación del crédito.",
-		lineaColumnaValor(dueC),
-		lineaValorUsado(FormatDateCanonical(due)),
-		lineaColumnaValor(adjC),
-		lineaReferencia("adjudicación "+FormatDateCanonical(adj)),
-	)
+	_ = values
+	_ = adj
+	_ = due
+	return "VENCIMIENTO: ANTERIOR A ADJUDICACIÓN"
 }
 
 func mensajePrimaCalculadaDifiere(values map[string]string, primaMensual, primaCalc, deuda, tasaFactor float64, tasaRaw string) string {
-	primaC := campoDesdeValues(values, "monthly_premium")
-	deudaC := campoDesdeValues(values, "initial_debt_amount")
-	tasaC := campoDesdeValues(values, "rate_percent")
-	if tasaC.Valor == "" {
-		tasaC.Valor = strings.TrimSpace(tasaRaw)
-	}
-	return mensajeConContexto(
-		fmt.Sprintf(
-			"La prima mensual no coincide con DEUDA INICIAL × %% (esperada %s; diferencia %s).",
-			formatoMontoNegocio(primaCalc),
-			formatoMontoNegocio(math.Abs(primaCalc-primaMensual)),
-		),
-		lineaColumnaValor(primaC),
-		lineaColumnaValor(deudaC),
-		lineaColumnaValor(tasaC),
-		lineaReferencia(fmt.Sprintf("cálculo %s × %s = %s", formatoMontoNegocio(deuda), formatoTasaBolivarFactor(tasaFactor), formatoMontoNegocio(primaCalc))),
-	)
+	_ = values
+	_ = primaMensual
+	_ = deuda
+	_ = tasaFactor
+	_ = tasaRaw
+	return fmt.Sprintf("REVISAR PRIMA: ESPERADA %s", formatoMontoNegocio(primaCalc))
 }
 
 func formatoTasaBolivarFactor(factor float64) string {
@@ -460,122 +375,77 @@ func formatoTasaBolivarFactor(factor float64) string {
 }
 
 func mensajePrimaCalculadaDifiereJustificada(values map[string]string, primaMensual, primaCalc float64, obs string) string {
-	primaC := campoDesdeValues(values, "monthly_premium")
-	return mensajeConContexto(
-		fmt.Sprintf(
-			"La prima mensual difiere de la calculada (%s vs %s); justificada con observación.",
-			formatoMontoNegocio(primaMensual),
-			formatoMontoNegocio(primaCalc),
-		),
-		lineaColumnaValor(primaC),
-		lineaReferencia("observación «"+strings.TrimSpace(obs)+"»"),
-	)
+	_ = values
+	_ = primaMensual
+	_ = obs
+	return fmt.Sprintf("REVISAR PRIMA: ESPERADA %s (CON OBSERVACIÓN)", formatoMontoNegocio(primaCalc))
 }
 
 func mensajeDeudaAltaRevisionManual(umbral float64) string {
-	return fmt.Sprintf(
-		"La deuda inicial supera el umbral de revisión manual (más de %s pesos); requiere validación antes de emitir.",
-		formatoMontoNegocio(umbral),
-	)
+	return fmt.Sprintf("REVISAR DEUDA: SUPERA %s", formatoMontoNegocio(umbral))
 }
 
 func mensajePlazoCalculadoDifiere(plazoArchivo float64, plazoCalc int, adj, due time.Time) string {
-	return fmt.Sprintf(
-		"El plazo calculado del archivo (%s meses) no coincide con el calculado por fechas (%d meses entre %s y %s). Registre observación si aplica.",
-		formatoMontoNegocio(plazoArchivo),
-		plazoCalc,
-		formatFechaCalendario(adj),
-		formatFechaCalendario(due),
-	)
+	_ = adj
+	_ = due
+	return fmt.Sprintf("REVISAR PLAZO: ARCHIVO %s MESES, CALCULADO %d", formatoMontoNegocio(plazoArchivo), plazoCalc)
 }
 
 func mensajePlazoCalculadoDifiereJustificado(plazoArchivo float64, plazoCalc int, obs string) string {
-	return fmt.Sprintf(
-		"El plazo del archivo (%s) difiere del calculado (%d meses); justificado: «%s».",
-		formatoMontoNegocio(plazoArchivo), plazoCalc, strings.TrimSpace(obs),
-	)
+	_ = obs
+	return fmt.Sprintf("REVISAR PLAZO: ARCHIVO %s, CALCULADO %d (CON OBSERVACIÓN)", formatoMontoNegocio(plazoArchivo), plazoCalc)
 }
 
 func mensajePlazoFinVigenciaIncoherente(values map[string]string, diffDias, plazoMeses int, adj, due time.Time) string {
-	adjC := campoDesdeValues(values, "loan_award_date")
-	if adjC.Valor == "" {
-		adjC = campoDesdeValues(values, "activation_date")
-	}
-	dueC := campoDesdeValues(values, "loan_due_date_current")
-	finEsp := adj.AddDate(0, plazoMeses, 0)
-	return mensajeConContexto(
-		fmt.Sprintf(
-			"El vencimiento no cuadra con adjudicación + plazo %d meses (diferencia %d días; se espera ≈0).",
-			plazoMeses,
-			diffDias,
-		),
-		lineaColumnaValor(adjC),
-		lineaValorUsado(FormatDateCanonical(adj)),
-		lineaColumnaValor(dueC),
-		lineaValorUsado(FormatDateCanonical(due)),
-		lineaReferencia("fin esperado "+FormatDateCanonical(finEsp)),
-	)
+	_ = values
+	_ = adj
+	_ = due
+	return fmt.Sprintf("REVISAR PLAZO: DIFERENCIA %d DÍAS (PLAZO %d MESES)", diffDias, plazoMeses)
 }
 
 func mensajePlazoFinVigenciaJustificado(values map[string]string, diffDias int, obs string) string {
-	dueC := campoDesdeValues(values, "loan_due_date_current")
-	return mensajeConContexto(
-		fmt.Sprintf("Diferencia de %d días entre vencimiento y plazo calculado; justificado.", diffDias),
-		lineaColumnaValor(dueC),
-		lineaReferencia("observación «"+strings.TrimSpace(obs)+"»"),
-	)
+	_ = values
+	_ = obs
+	return fmt.Sprintf("REVISAR PLAZO: DIFERENCIA %d DÍAS (CON OBSERVACIÓN)", diffDias)
 }
 
 func mensajePrimaNoCoincideValidacionExcel(primaArchivo, primaExcel float64, refRaw string) string {
-	return fmt.Sprintf(
-		"La prima mensual (%s) no coincide con la columna VALIDACION PRIMA MENSUAL del archivo (%s).",
-		formatoMontoNegocio(primaArchivo), strings.TrimSpace(refRaw),
-	)
+	_ = primaExcel
+	_ = refRaw
+	return fmt.Sprintf("REVISAR PRIMA: NO COINCIDE VALIDACIÓN EXCEL (%s)", formatoMontoNegocio(primaArchivo))
 }
 
 func mensajeDifPrimaExcelDistinta(difRaw string) string {
-	return fmt.Sprintf(
-		"La columna Dif prima del archivo indica diferencia (%s); el control de tasa del Excel no está en cero.",
-		strings.TrimSpace(difRaw),
-	)
+	return fmt.Sprintf("REVISAR PRIMA: DIFERENCIA EXCEL %s", strings.TrimSpace(difRaw))
 }
 
 func mensajePlazoControlExcelDifiere(plazoCtrl float64, plazoCalc int, adj, due time.Time) string {
-	return fmt.Sprintf(
-		"La columna Control plazo (%s meses) no coincide con el plazo calculado por fechas (%d meses entre %s y %s).",
-		formatoMontoNegocio(plazoCtrl), plazoCalc, formatFechaCalendario(adj), formatFechaCalendario(due),
-	)
+	_ = adj
+	_ = due
+	return fmt.Sprintf("REVISAR PLAZO: CONTROL %s, CALCULADO %d MESES", formatoMontoNegocio(plazoCtrl), plazoCalc)
 }
 
 func mensajePrimaNoPermitida(code, valorRaw string, permitidos []float64) string {
-	return fmt.Sprintf(
-		"La prima mensual (%s) no está dentro de los valores permitidos para el producto %s (catálogo: %s).",
-		valorRaw, strings.TrimSpace(code), formatoListaMontos(permitidos),
-	)
+	_ = code
+	_ = permitidos
+	return fmt.Sprintf("REVISAR PRIMA: VALOR %s NO PERMITIDO", valorRaw)
 }
 
 func mensajeInicioVigenciaFueraMesTrabajo(valorRaw string) string {
-	return fmt.Sprintf(
-		"La fecha de inicio de vigencia (%s) no corresponde al mes de trabajo actual; debe ajustarse al periodo que se está procesando.",
-		valorRaw,
-	)
+	return fmt.Sprintf("FECHA INICIO: FUERA DEL MES DE TRABAJO (%s)", valorRaw)
 }
 
 func mensajeFinVigenciaIncoherentePlazo(inicioRaw, plazoRaw, finRaw string, diffDays, tolerancia int, layouts []string) string {
-	direccion := "posterior"
+	_ = inicioRaw
+	_ = plazoRaw
+	_ = finRaw
+	_ = layouts
+	_ = tolerancia
 	absDiff := diffDays
-	if diffDays < 0 {
-		direccion = "anterior"
-		absDiff = -diffDays
+	if absDiff < 0 {
+		absDiff = -absDiff
 	}
-	msg := fmt.Sprintf(
-		"La fecha de fin de vigencia (%s) no coincide con el plazo inicial: desde el inicio (%s) con %s meses de plazo, la fecha fin esperada difiere en %d días (%s a la esperada). Tolerancia permitida: ±%d días.",
-		finRaw, inicioRaw, strings.TrimSpace(plazoRaw), absDiff, direccion, tolerancia,
-	)
-	if det := detalleVigenciaPlazoInterpretada(inicioRaw, plazoRaw, finRaw, layouts); det != "" {
-		msg += " " + det
-	}
-	return msg
+	return fmt.Sprintf("REVISAR FIN VIGENCIA: DIFERENCIA %d DÍAS", absDiff)
 }
 
 // detalleVigenciaPlazoInterpretada explica cómo se leyeron inicio y fin (mes/día/año en vigencias).
@@ -611,22 +481,92 @@ func detalleVigenciaPlazoInterpretada(inicioRaw, plazoRaw, finRaw string, layout
 }
 
 func mensajeFlujoCancelacionesMapfre() string {
-	return "El nombre del archivo sugiere un flujo de cancelaciones MAPFRE; confirme que la operación corresponde a cancelación y no a inclusión."
+	return "ARCHIVO: POSIBLE CANCELACIÓN MAPFRE"
+}
+
+func mensajeCancelacionFaltaFinProyectado() string {
+	return "CANCELACIÓN: FALTA FECHA PROYECTADA FIN DE VIGENCIA"
+}
+
+func mensajeCancelacionFaltaFechaActivacion() string {
+	return "CANCELACIÓN: FALTA FECHA DE ACTIVACIÓN"
+}
+
+func mensajeCancelacionFechasNoValidas(finRaw, activRaw string) string {
+	return fmt.Sprintf(
+		"CANCELACIÓN: FECHAS NO VÁLIDAS (FIN=%s, ACTIVACIÓN=%s)",
+		strings.TrimSpace(finRaw),
+		strings.TrimSpace(activRaw),
+	)
+}
+
+func mensajeCancelacionFinActivMismoDia(fin, activ time.Time) string {
+	return fmt.Sprintf(
+		"CANCELACIÓN: FIN DE VIGENCIA DEBE COINCIDIR EN DÍA CON ACTIVACIÓN (FIN=%s, ACTIVACIÓN=%s)",
+		formatFechaCalendario(fin),
+		formatFechaCalendario(activ),
+	)
+}
+
+func mensajeCancelacionMesEtiquetaIndeterminado() string {
+	return "CANCELACIÓN: NO SE PUDO DETERMINAR MES DE ETIQUETADO (OBS O NOMBRE DE ARCHIVO)"
+}
+
+func mensajeCancelacionFinFueraMesEtiqueta(fin time.Time, labelYear int, labelMonth time.Month) string {
+	return fmt.Sprintf(
+		"CANCELACIÓN: FIN DE VIGENCIA FUERA DEL MES ETIQUETADO (FIN=%s, ETIQUETA=%02d/%d)",
+		formatFechaCalendario(fin),
+		int(labelMonth),
+		labelYear,
+	)
+}
+
+func mensajeCancelacionPolizaNoEnStock(credit string) string {
+	return fmt.Sprintf("CANCELACIÓN: CRÉDITO NO ENCONTRADO EN STOCK MAPFRE (OP BT=%s)", strings.TrimSpace(credit))
+}
+
+func mensajeCancelacionDocumentoNoCoincide(anulDoc, stockDoc string) string {
+	return fmt.Sprintf(
+		"CANCELACIÓN: DOCUMENTO NO COINCIDE CON STOCK (ARCHIVO=%s, STOCK=%s)",
+		strings.TrimSpace(anulDoc),
+		strings.TrimSpace(stockDoc),
+	)
+}
+
+func mensajeCancelacionGrupoPolizaInconsistente(grupo, actual string) string {
+	return fmt.Sprintf(
+		"CANCELACIÓN: PÓLIZA GRUPO Y ACTUAL INCONSISTENTES (GRUPO=%s, ACTUAL=%s)",
+		strings.TrimSpace(grupo),
+		strings.TrimSpace(actual),
+	)
+}
+
+func mensajeCancelacionGrupoPolizaNoCoincideStock(anulGrupo, stockGrupo string) string {
+	return fmt.Sprintf(
+		"CANCELACIÓN: PÓLIZA GRUPO NO COINCIDE CON STOCK (ARCHIVO=%s, STOCK=%s)",
+		strings.TrimSpace(anulGrupo),
+		strings.TrimSpace(stockGrupo),
+	)
+}
+
+func mensajeCancelacionActivacionNoCoincideStock(anulActiv, stockActiv string) string {
+	return fmt.Sprintf(
+		"CANCELACIÓN: FECHA ACTIVACIÓN NO COINCIDE CON STOCK (ARCHIVO=%s, STOCK=%s)",
+		strings.TrimSpace(anulActiv),
+		strings.TrimSpace(stockActiv),
+	)
 }
 
 func mensajePrimaCeroSinCongelamiento() string {
-	return "La prima mensual es cero y el producto no tiene política de congelamiento; la póliza se marca como cancelada."
+	return "PRIMA CERO: PÓLIZA CANCELADA"
 }
 
 func mensajePolizaCongeladaPrimaCero() string {
-	return "La prima mensual es cero; la póliza se registra como congelada (no bloquea la carga del archivo)."
+	return "PRIMA CERO: PÓLIZA CONGELADA"
 }
 
 func mensajeResumenCreditoDuplicadoArchivo(cred string, count int, filasTodas, filasDup string) string {
-	return fmt.Sprintf(
-		"Resumen: el crédito u operación «%s» aparece %d veces en el archivo. Filas: %s. Filas repetidas (después de la primera aparición): %s.",
-		cred, count, filasTodas, filasDup,
-	)
+	return fmt.Sprintf("OP BT DUPLICADO: %s (%d VECES, FILAS %s)", cred, count, filasTodas)
 }
 
 func formatoMontoNegocio(n float64) string {

@@ -19,7 +19,7 @@ func TestValidationReport_InformativeSeparateFromIncidencias(t *testing.T) {
 		PolicyStatus:   "ACTIVE",
 		ValidationJSON: `["` + validationnotes.Informativo("vencimiento anterior al mes de facturación") + `"]`,
 	}}
-	report := BuildFileValidationReportFromPolicies("f1", "MICRO_BANCO_ABRIL.xlsx", "bolivar_banco", "PROCESSED", "", "", policies)
+	report := BuildFileValidationReportFromPolicies("f1", "MICRO_BANCO_ABRIL.xlsx", "bolivar_inclusion_deudores_banco", "PROCESSED", "", "", policies)
 	if report.TotalPendingValidations != 0 {
 		t.Fatalf("avisos informativos no deben ir a incidencias: pending=%d", report.TotalPendingValidations)
 	}
@@ -74,7 +74,7 @@ func TestValidationReport_EmailXLSXUnicaHoja(t *testing.T) {
 			RawDataJSON:    string(rawInfo),
 		},
 	}
-	report := BuildFileValidationReportFromPolicies("f1", "MICRO.xlsx", "bolivar_banco", "ERROR", "", "", policies)
+	report := BuildFileValidationReportFromPolicies("f1", "MICRO.xlsx", "bolivar_inclusion_deudores_banco", "ERROR", "", "", policies)
 	b, err := ValidationReportEmailXLSX(report)
 	if err != nil {
 		t.Fatal(err)
@@ -128,7 +128,7 @@ func TestValidationReport_EmailXLSXIncluyeBloqueantesEInformativasMismaFila(t *t
 			validationnotes.Informativo("aviso adicional") + `"]`,
 		RawDataJSON: string(raw),
 	}}
-	report := BuildFileValidationReportFromPolicies("f1", "MICRO.xlsx", "bolivar_banco", "ERROR", "", "", policies)
+	report := BuildFileValidationReportFromPolicies("f1", "MICRO.xlsx", "bolivar_inclusion_deudores_banco", "ERROR", "", "", policies)
 	if len(report.EmailExportedRows) != 1 {
 		t.Fatalf("una sola fila esperada, got %d", len(report.EmailExportedRows))
 	}
@@ -151,7 +151,7 @@ func TestValidationReport_PolizaCongeladaEnInformes(t *testing.T) {
 		PolicyStatus:   "FROZEN",
 		ValidationJSON: `["` + validationnotes.Informativo("La prima mensual es cero; la póliza se registra como congelada (no bloquea la carga del archivo).") + `"]`,
 	}}
-	report := BuildFileValidationReportFromPolicies("f1", "MICRO_BANCO_ABRIL.xlsx", "bolivar_banco", "PROCESSED", "", "", policies)
+	report := BuildFileValidationReportFromPolicies("f1", "MICRO_BANCO_ABRIL.xlsx", "bolivar_inclusion_deudores_banco", "PROCESSED", "", "", policies)
 	if report.TotalPendingValidations != 0 {
 		t.Fatalf("congelada no va a incidencias: pending=%d", report.TotalPendingValidations)
 	}
@@ -184,7 +184,7 @@ func TestValidationReport_MirrorSoloFilasConFallo(t *testing.T) {
 			RawDataJSON:    string(rawInfo),
 		},
 	}
-	report := BuildFileValidationReportFromPolicies("f1", "MICRO_BANCO_ABRIL.xlsx", "bolivar_banco", "ERROR", "", "", policies)
+	report := BuildFileValidationReportFromPolicies("f1", "MICRO_BANCO_ABRIL.xlsx", "bolivar_inclusion_deudores_banco", "ERROR", "", "", policies)
 	if len(report.ExportedRows) != 0 {
 		t.Fatalf("solo informativas/congeladas no deben ir a Datos archivo: exported=%d", len(report.ExportedRows))
 	}
@@ -204,7 +204,7 @@ func TestValidationReport_MirrorSheetConDatosArchivo(t *testing.T) {
 		ValidationJSON: `["Incidencia: prima no válida"]`,
 		RawDataJSON:    string(raw),
 	}}
-	report := BuildFileValidationReportFromPolicies("f1", "INCLUSION.xlsx", "mapfre_vida", "ERROR", "", "", policies)
+	report := BuildFileValidationReportFromPolicies("f1", "INCLUSION.xlsx", "mapfre_inclusion_vida_voluntario", "ERROR", "", "", policies)
 	if len(report.ExportedRows) != 1 {
 		t.Fatalf("exported=%d", len(report.ExportedRows))
 	}

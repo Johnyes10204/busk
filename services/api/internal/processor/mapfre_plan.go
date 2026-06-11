@@ -15,13 +15,13 @@ type mapfreTariffLine struct {
 
 func mapfreTariffsForProduct(code string) ([]mapfreTariffLine, bool) {
 	switch strings.ToUpper(strings.TrimSpace(code)) {
-	case "MAPFRE_VIDA", "MAPFRE_STOCK":
+	case "MAPFRE_VIDA", "MAPFRE_INCLUSION_VIDA_VOLUNTARIO", "MAPFRE_STOCK", "MAPFRE_STOCK_CARTERA":
 		// Voluntario
 		return []mapfreTariffLine{
 			{planName: "PLAN 1", premium: 8600, insuredAmount: 5_000_000},
 			{planName: "PLAN 2", premium: 17100, insuredAmount: 10_000_000},
 		}, true
-	case "MAPFRE_ACC_MEN":
+	case "MAPFRE_ACC_MEN", "MAPFRE_INCLUSION_AP_MENORES":
 		// AP + Accidentes menores
 		return []mapfreTariffLine{
 			{planName: "PLAN 1", premium: 7800, insuredAmount: 5_000_000},
@@ -29,11 +29,13 @@ func mapfreTariffsForProduct(code string) ([]mapfreTariffLine, bool) {
 			{planName: "PLAN 2", premium: 10600, insuredAmount: 8_000_000},
 			{planName: "PLAN 2", premium: 10070, insuredAmount: 8_000_000},
 		}, true
-	case "MAPFRE_CANCER":
-		// AP + Cáncer
+	case "MAPFRE_CANCER", "MAPFRE_INCLUSION_AP_CANCER":
+		// AP + Cáncer (primas en semilla + muestras INCLUSION-CANCER-MAPFRE.xlsx)
 		return []mapfreTariffLine{
 			{planName: "PLAN 1", premium: 8500, insuredAmount: 7_000_000},
+			{planName: "PLAN 1", premium: 8075, insuredAmount: 7_000_000},
 			{planName: "PLAN 2", premium: 13000, insuredAmount: 10_000_000},
+			{planName: "PLAN 2", premium: 12350, insuredAmount: 10_000_000},
 			{planName: "PLAN 2", premium: 12000, insuredAmount: 10_000_000},
 		}, true
 	default:
@@ -217,7 +219,7 @@ func mensajeValorAseguradoNoCoincideConPlan(planName, premRaw, insuredRaw string
 
 // valorAseguradoDesdeValues lee el monto desde el campo canónico o desde encabezados del archivo.
 func valorAseguradoDesdeValues(values map[string]string) string {
-	for _, key := range []string{"insured_amount", "VALOR ASEGURADO", "VALOR_ASEGURADO"} {
+	for _, key := range []string{"insured_amount", "VALORARECONOCER", "VALOR ASEGURADO", "VALOR_ASEGURADO"} {
 		if v := strings.TrimSpace(values[key]); v != "" {
 			return v
 		}

@@ -1,0 +1,689 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Busk Seguros · Plataforma de Procesamiento de Pólizas</title>
+<style>
+  :root {
+    --bg-dark: #0b1220;
+    --bg-mid: #111c34;
+    --bg-light: #f8fafc;
+    --primary: #2563eb;
+    --primary-light: #60a5fa;
+    --accent: #10b981;
+    --accent-2: #f59e0b;
+    --text-dark: #0f172a;
+    --text-mid: #475569;
+    --text-light: #f1f5f9;
+    --border: #e2e8f0;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+  body { background: var(--bg-dark); color: var(--text-light); overflow: hidden; }
+
+  /* === Deck === */
+  .deck { position: relative; width: 100vw; height: 100vh; }
+  .slide {
+    position: absolute; inset: 0;
+    padding: 64px 80px;
+    display: none;
+    flex-direction: column;
+    justify-content: center;
+    animation: fadeIn 0.4s ease;
+  }
+  .slide.active { display: flex; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+  /* === Backgrounds === */
+  .bg-cover { background: radial-gradient(circle at 30% 20%, #1e3a8a 0%, var(--bg-dark) 65%); }
+  .bg-dark  { background: linear-gradient(135deg, var(--bg-dark) 0%, var(--bg-mid) 100%); }
+  .bg-light { background: var(--bg-light); color: var(--text-dark); }
+  .bg-accent { background: linear-gradient(135deg, #064e3b 0%, #0f172a 100%); }
+
+  /* === Typography === */
+  .eyebrow {
+    font-size: 13px; letter-spacing: 0.22em; text-transform: uppercase;
+    color: var(--primary-light); margin-bottom: 18px; font-weight: 600;
+  }
+  .bg-light .eyebrow { color: var(--primary); }
+
+  h1.title { font-size: 64px; line-height: 1.05; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 18px; }
+  h2.title { font-size: 44px; line-height: 1.1; font-weight: 700; letter-spacing: -0.015em; margin-bottom: 14px; }
+  h3.title { font-size: 32px; line-height: 1.2; font-weight: 700; margin-bottom: 12px; }
+
+  p.lead { font-size: 22px; line-height: 1.5; max-width: 920px; color: rgba(241,245,249,0.85); }
+  .bg-light p.lead { color: var(--text-mid); }
+
+  /* === Two columns === */
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; align-items: center; }
+  .two-col.text-img { grid-template-columns: 1.1fr 0.9fr; }
+
+  /* === Cards === */
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 18px; margin-top: 32px; }
+  .feature-card {
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 14px;
+    padding: 22px;
+    backdrop-filter: blur(4px);
+  }
+  .bg-light .feature-card { background: #fff; border-color: var(--border); box-shadow: 0 4px 16px rgba(15,23,42,0.04); }
+  .feature-card .icon {
+    width: 44px; height: 44px; border-radius: 10px;
+    background: rgba(37,99,235,0.18); color: var(--primary-light);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px; margin-bottom: 14px;
+  }
+  .bg-light .feature-card .icon { background: #dbeafe; color: var(--primary); }
+  .feature-card h4 { font-size: 18px; margin-bottom: 6px; font-weight: 700; }
+  .feature-card p { font-size: 14.5px; line-height: 1.5; color: rgba(241,245,249,0.75); }
+  .bg-light .feature-card p { color: var(--text-mid); }
+
+  /* === Steps (journey) === */
+  .journey { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; margin-top: 36px; }
+  .journey .stage {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 12px;
+    padding: 16px;
+    position: relative;
+  }
+  .bg-light .journey .stage { background: #fff; border-color: var(--border); }
+  .journey .stage .num {
+    width: 28px; height: 28px; border-radius: 50%;
+    background: var(--primary); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 13px; margin-bottom: 10px;
+  }
+  .journey .stage h5 { font-size: 13.5px; margin-bottom: 4px; font-weight: 700; }
+  .journey .stage p { font-size: 12px; color: rgba(241,245,249,0.7); line-height: 1.4; }
+  .bg-light .journey .stage p { color: var(--text-mid); }
+
+  /* === KPIs / numbers === */
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 24px; margin-top: 30px; }
+  .kpi {
+    text-align: center; padding: 24px 16px;
+    background: rgba(16,185,129,0.08);
+    border: 1px solid rgba(16,185,129,0.25);
+    border-radius: 14px;
+  }
+  .kpi .big { font-size: 48px; font-weight: 800; color: var(--accent); line-height: 1; }
+  .kpi .lbl { font-size: 13.5px; margin-top: 10px; color: rgba(241,245,249,0.78); }
+  .bg-light .kpi { background: #ecfdf5; border-color: #a7f3d0; }
+  .bg-light .kpi .lbl { color: var(--text-mid); }
+
+  /* === Personas / roles === */
+  .roles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; margin-top: 32px; }
+  .role-card {
+    background: rgba(255,255,255,0.04);
+    border-radius: 14px; padding: 22px;
+    border: 1px solid rgba(255,255,255,0.1);
+  }
+  .bg-light .role-card { background: #fff; border-color: var(--border); }
+  .role-card .avatar {
+    width: 52px; height: 52px; border-radius: 50%;
+    background: linear-gradient(135deg, var(--primary), var(--primary-light));
+    color: #fff; display: flex; align-items: center; justify-content: center;
+    font-size: 22px; font-weight: 700; margin-bottom: 14px;
+  }
+  .role-card.ops .avatar { background: linear-gradient(135deg, var(--accent), #34d399); }
+  .role-card.it  .avatar { background: linear-gradient(135deg, var(--accent-2), #fbbf24); }
+  .role-card h4 { font-size: 18px; margin-bottom: 6px; }
+  .role-card ul { list-style: none; margin-top: 10px; font-size: 14px; }
+  .role-card ul li { padding: 4px 0; color: rgba(241,245,249,0.8); }
+  .bg-light .role-card ul li { color: var(--text-mid); }
+  .role-card ul li::before { content: "✓ "; color: var(--accent); font-weight: 700; }
+
+  /* === Before / After === */
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 30px; }
+  .compare .col {
+    border-radius: 14px; padding: 22px;
+    border: 1px solid rgba(255,255,255,0.1);
+  }
+  .compare .before { background: rgba(239,68,68,0.08); border-color: rgba(239,68,68,0.3); }
+  .compare .after  { background: rgba(16,185,129,0.08); border-color: rgba(16,185,129,0.3); }
+  .compare h4 { font-size: 17px; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+  .compare .before h4::before { content: "⚠"; color: #f87171; font-size: 22px; }
+  .compare .after h4::before  { content: "✓"; color: var(--accent); font-size: 22px; }
+  .compare ul { list-style: none; }
+  .compare ul li { font-size: 15px; padding: 6px 0; color: rgba(241,245,249,0.85); }
+  .compare ul li::before { content: "— "; opacity: 0.5; }
+
+  /* === Flow diagram (slide 5) === */
+  .pipeline {
+    display: flex; align-items: stretch; gap: 0; margin-top: 36px;
+    overflow-x: auto;
+  }
+  .pipeline .node {
+    flex: 1; min-width: 130px;
+    padding: 18px 14px;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 12px;
+    text-align: center;
+    position: relative;
+  }
+  .pipeline .arrow {
+    align-self: center; padding: 0 6px; color: var(--primary-light); font-size: 22px;
+  }
+  .pipeline .node .ic { font-size: 26px; margin-bottom: 6px; }
+  .pipeline .node h5 { font-size: 13.5px; margin-bottom: 4px; }
+  .pipeline .node p { font-size: 11.5px; color: rgba(241,245,249,0.7); line-height: 1.35; }
+
+  /* === Nav === */
+  .nav {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 14px; z-index: 100;
+    background: rgba(15,23,42,0.7); backdrop-filter: blur(8px);
+    padding: 8px 14px; border-radius: 100px;
+    border: 1px solid rgba(255,255,255,0.1);
+  }
+  .nav button {
+    background: rgba(255,255,255,0.1); color: #fff; border: 0;
+    width: 34px; height: 34px; border-radius: 50%; cursor: pointer;
+    font-size: 16px;
+  }
+  .nav button:hover { background: rgba(255,255,255,0.2); }
+  .nav .counter { font-size: 13px; color: rgba(255,255,255,0.85); min-width: 50px; text-align: center; }
+
+  .dots {
+    position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 6px; z-index: 100;
+  }
+  .dots .dot { width: 7px; height: 7px; border-radius: 50%; background: rgba(255,255,255,0.25); cursor: pointer; }
+  .dots .dot.active { background: var(--primary-light); width: 20px; border-radius: 4px; }
+
+  .slide-num {
+    position: fixed; top: 24px; right: 28px;
+    font-size: 12px; color: rgba(255,255,255,0.5); letter-spacing: 0.1em;
+    z-index: 100;
+  }
+  .bg-light + .slide-num, .slide.bg-light .slide-num { color: var(--text-mid); }
+
+  .footer-brand {
+    position: absolute; bottom: 28px; left: 80px;
+    font-size: 12px; letter-spacing: 0.18em; text-transform: uppercase;
+    color: rgba(255,255,255,0.45);
+  }
+  .bg-light .footer-brand { color: var(--text-mid); }
+
+  /* === Cover specific === */
+  .cover-tag {
+    display: inline-flex; gap: 8px; align-items: center;
+    padding: 6px 14px; border-radius: 100px;
+    background: rgba(96,165,250,0.15); border: 1px solid rgba(96,165,250,0.3);
+    font-size: 12.5px; color: var(--primary-light); margin-bottom: 28px;
+  }
+  .cover-tag .dot-live { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 4px rgba(16,185,129,0.25); }
+
+  /* === Big visual right === */
+  .visual-frame {
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 18px;
+    padding: 26px;
+    aspect-ratio: 4 / 3;
+    display: flex; flex-direction: column;
+  }
+  .bg-light .visual-frame { background: #fff; border-color: var(--border); box-shadow: 0 8px 32px rgba(15,23,42,0.06); }
+
+  .checklist { list-style: none; margin-top: 22px; }
+  .checklist li {
+    padding: 10px 0; font-size: 17px;
+    display: flex; gap: 12px; align-items: baseline;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+  }
+  .bg-light .checklist li { border-color: var(--border); }
+  .checklist li::before { content: "→"; color: var(--primary-light); font-weight: 700; }
+  .bg-light .checklist li::before { color: var(--primary); }
+
+  /* === Mock UI (closer to product feel) === */
+  .ui-mock {
+    background: #0a0f1f;
+    border-radius: 12px;
+    border: 1px solid rgba(255,255,255,0.1);
+    padding: 18px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    color: #cbd5e1;
+  }
+  .ui-mock .head { color: var(--primary-light); margin-bottom: 8px; font-weight: 700; }
+  .ui-mock .row { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px dashed rgba(255,255,255,0.06); }
+  .ui-mock .row:last-child { border: 0; }
+  .ui-mock .tag { padding: 1px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; }
+  .ui-mock .tag.ok { background: #064e3b; color: #6ee7b7; }
+  .ui-mock .tag.warn { background: #78350f; color: #fcd34d; }
+  .ui-mock .tag.err { background: #7f1d1d; color: #fca5a5; }
+
+  /* === Print to PDF === */
+  @media print {
+    body { background: #fff; }
+    .deck { height: auto; width: 100%; }
+    .slide { display: flex !important; page-break-after: always; height: 100vh; }
+    .nav, .dots, .slide-num { display: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<div class="deck" id="deck">
+
+  <!-- ============ SLIDE 1: Cover ============ -->
+  <section class="slide bg-cover active">
+    <div class="cover-tag"><span class="dot-live"></span> Plataforma operativa</div>
+    <h1 class="title">Procesamos las pólizas<br/>que tu negocio recibe<br/><span style="color: var(--primary-light);">de forma automática.</span></h1>
+    <p class="lead">De Excel disperso a información estandarizada, validada y consultable —
+    sin desarrollo de software por cada convenio nuevo.</p>
+    <div class="footer-brand">Busk Seguros · Junio 2026</div>
+  </section>
+
+  <!-- ============ SLIDE 2: The problem ============ -->
+  <section class="slide bg-dark">
+    <div class="eyebrow">El reto</div>
+    <h2 class="title">Cada aseguradora envía pólizas<br/>en su propio formato.</h2>
+    <p class="lead">Bolívar, Mapfre, Sura, los planes nuevos de cada convenio… archivos Excel con miles de filas,
+    encabezados distintos, hojas distintas, prefijos distintos. Procesarlos a mano consume días y deja errores sin trazabilidad.</p>
+
+    <div class="compare">
+      <div class="col before">
+        <h4>Cómo se hacía</h4>
+        <ul>
+          <li>Apertura manual de cada archivo en Excel</li>
+          <li>Macros y plantillas mantenidas por personas</li>
+          <li>Sin trazabilidad de qué se rechazó y por qué</li>
+          <li>Un nuevo convenio = semanas de desarrollo</li>
+        </ul>
+      </div>
+      <div class="col after">
+        <h4>Cómo se hace ahora</h4>
+        <ul>
+          <li>Los archivos se recogen, leen y clasifican solos</li>
+          <li>Cada producto se configura desde un catálogo</li>
+          <li>Cada novedad queda documentada y exportable</li>
+          <li>Un nuevo convenio = horas de configuración</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SLIDE 3: Solution ============ -->
+  <section class="slide bg-cover">
+    <div class="eyebrow">La propuesta</div>
+    <h2 class="title">Una plataforma de configuración,<br/>no de programación.</h2>
+    <div class="two-col" style="margin-top: 30px;">
+      <div>
+        <ul class="checklist">
+          <li>El equipo de negocio define los productos y sus reglas</li>
+          <li>Operaciones monitorea, descarga y reintenta</li>
+          <li>TI sólo interviene en el onboarding inicial</li>
+          <li>Cada póliza queda trazada de archivo de origen a consulta final</li>
+        </ul>
+      </div>
+      <div class="visual-frame">
+        <div class="ui-mock">
+          <div class="head">PRODUCTOS · BOLÍVAR VIDA GRUPO</div>
+          <div class="row"><span>Plan A — Empleados</span><span class="tag ok">activo</span></div>
+          <div class="row"><span>Plan B — Pensionados</span><span class="tag ok">activo</span></div>
+          <div class="row"><span>Plan C — Independientes</span><span class="tag warn">en prueba</span></div>
+          <div class="row"><span>Convenio antiguo 2021</span><span class="tag err">inactivo</span></div>
+        </div>
+        <p style="font-size: 12px; color: rgba(255,255,255,0.5); margin-top: 12px; text-align: center;">
+          Vista conceptual del catálogo
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SLIDE 4: Building blocks ============ -->
+  <section class="slide bg-light">
+    <div class="eyebrow">Componentes</div>
+    <h2 class="title">Cinco piezas que el negocio controla.</h2>
+    <p class="lead">Toda la inteligencia operativa vive en cinco objetos. Cambiarlos no requiere desplegar nada.</p>
+    <div class="card-grid">
+      <div class="feature-card">
+        <div class="icon">◆</div>
+        <h4>Productos</h4>
+        <p>La línea de negocio. Ej: Vida Grupo, Auto Voluntario, Hogar.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">▦</div>
+        <h4>Formatos</h4>
+        <p>Una variante por convenio o plan. Define cómo leer su archivo.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">$</div>
+        <h4>Primas permitidas</h4>
+        <p>Lista blanca de montos válidos. Cualquier desviación se marca.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">↻</div>
+        <h4>Motor de procesamiento</h4>
+        <p>Lee, clasifica, valida y archiva los archivos automáticamente.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">✎</div>
+        <h4>Reportes y consultas</h4>
+        <p>Tablero de calidad + búsqueda de pólizas + exportes a Excel.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SLIDE 5: Journey ============ -->
+  <section class="slide bg-dark">
+    <div class="eyebrow">El recorrido</div>
+    <h2 class="title">Diez pasos, de la configuración<br/>al consumo de la información.</h2>
+    <div class="pipeline">
+      <div class="node"><div class="ic">①</div><h5>Crear producto</h5><p>Registrar la línea de negocio.</p></div>
+      <div class="arrow">→</div>
+      <div class="node"><div class="ic">②</div><h5>Registrar formatos</h5><p>Uno por plan o convenio.</p></div>
+      <div class="arrow">→</div>
+      <div class="node"><div class="ic">③</div><h5>Activar</h5><p>Encender o pausar sin perder datos.</p></div>
+      <div class="arrow">→</div>
+      <div class="node"><div class="ic">④</div><h5>Probar matching</h5><p>Simular con un archivo real.</p></div>
+      <div class="arrow">→</div>
+      <div class="node"><div class="ic">⑤</div><h5>Primas válidas</h5><p>Configurar lista blanca.</p></div>
+    </div>
+    <div class="pipeline" style="margin-top: 14px;">
+      <div class="node"><div class="ic">⑥</div><h5>Procesar</h5><p>Lanzar escaneo automático.</p></div>
+      <div class="arrow">→</div>
+      <div class="node"><div class="ic">⑦</div><h5>Monitorear</h5><p>Progreso en tiempo real.</p></div>
+      <div class="arrow">→</div>
+      <div class="node"><div class="ic">⑧</div><h5>Inspeccionar</h5><p>Ver archivos y descargas.</p></div>
+      <div class="arrow">→</div>
+      <div class="node"><div class="ic">⑨</div><h5>Reportar</h5><p>Calidad y novedades.</p></div>
+      <div class="arrow">→</div>
+      <div class="node"><div class="ic">⑩</div><h5>Consultar pólizas</h5><p>Buscar por crédito o documento.</p></div>
+    </div>
+  </section>
+
+  <!-- ============ SLIDE 6: Step 1-2: Onboard product ============ -->
+  <section class="slide bg-light">
+    <div class="eyebrow">Pasos 1 y 2 · Onboarding</div>
+    <h2 class="title">Dar de alta un producto<br/>y sus formatos.</h2>
+    <div class="two-col text-img" style="margin-top: 24px;">
+      <div>
+        <p class="lead" style="font-size: 19px; margin-bottom: 22px;">
+          Un <strong>producto</strong> es la línea de negocio (ej. "Bolívar Vida Grupo").
+          Cada producto puede tener varios <strong>formatos</strong> — uno por convenio, plan o aseguradora origen.
+        </p>
+        <ul class="checklist">
+          <li>Sin escribir código: se configura desde el catálogo</li>
+          <li>Cada formato define su nombre de archivo, hoja Excel y columnas</li>
+          <li>Se pueden registrar tantos formatos como se necesiten</li>
+        </ul>
+      </div>
+      <div class="visual-frame">
+        <div class="ui-mock">
+          <div class="head">BOLÍVAR VIDA GRUPO · 4 formatos</div>
+          <div class="row"><span>BOL_VG_A_*.xlsx → Plan A</span><span class="tag ok">activo</span></div>
+          <div class="row"><span>BOL_VG_B_*.xlsx → Plan B</span><span class="tag ok">activo</span></div>
+          <div class="row"><span>BOL_VG_C_*.xlsx → Plan C</span><span class="tag warn">pruebas</span></div>
+          <div class="row"><span>BOL_LEGACY_*.xls  → Histórico</span><span class="tag err">inactivo</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SLIDE 7: Steps 3-4: activate + match-test ============ -->
+  <section class="slide bg-dark">
+    <div class="eyebrow">Pasos 3 y 4 · Control y validación</div>
+    <h2 class="title">Activar a voluntad.<br/>Probar antes de producir.</h2>
+    <div class="card-grid" style="margin-top: 28px;">
+      <div class="feature-card">
+        <div class="icon">⏻</div>
+        <h4>Activar / desactivar</h4>
+        <p>Un convenio que termina o pausa no se borra: queda inactivo y se puede reactivar cuando vuelva.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">⚙</div>
+        <h4>Match test</h4>
+        <p>Antes de procesar en producción se simula con cabeceras reales del archivo: dice qué formato gana y por qué.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">⚠</div>
+        <h4>Cero sorpresas</h4>
+        <p>Si los encabezados cambiaron, el match test lo detecta. Se corrige antes de tocar pólizas reales.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SLIDE 8: Step 5: premiums ============ -->
+  <section class="slide bg-accent">
+    <div class="eyebrow">Paso 5 · Reglas de negocio</div>
+    <h2 class="title">Solo cobramos las primas<br/>que el negocio autoriza.</h2>
+    <div class="two-col" style="margin-top: 22px;">
+      <div>
+        <p class="lead" style="margin-bottom: 22px;">
+          Por cada producto se define una <strong>lista blanca de primas</strong>. Cualquier póliza con un monto fuera
+          de la lista queda marcada como <em>inválida</em> y aparece en el reporte de novedades.
+        </p>
+        <ul class="checklist">
+          <li>Se actualiza desde la plataforma, sin desarrollo</li>
+          <li>Aplica de inmediato al siguiente procesamiento</li>
+          <li>Auditable: queda registrado quién cambió qué y cuándo</li>
+        </ul>
+      </div>
+      <div class="visual-frame">
+        <div class="ui-mock">
+          <div class="head">PRIMAS · BOLÍVAR VIDA GRUPO</div>
+          <div class="row"><span>$ 12.500</span><span class="tag ok">vigente</span></div>
+          <div class="row"><span>$ 18.750</span><span class="tag ok">vigente</span></div>
+          <div class="row"><span>$ 25.000</span><span class="tag ok">vigente</span></div>
+          <div class="row"><span>$ 37.500</span><span class="tag ok">vigente</span></div>
+          <div class="row" style="color:#fca5a5;"><span>$ 99.999 (en archivo)</span><span class="tag err">fuera de lista</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SLIDE 9: Step 6-7: process & monitor ============ -->
+  <section class="slide bg-dark">
+    <div class="eyebrow">Pasos 6 y 7 · Automatización</div>
+    <h2 class="title">Un solo botón.<br/>Procesa cientos de archivos.</h2>
+    <div class="two-col text-img" style="margin-top: 26px;">
+      <div>
+        <ul class="checklist">
+          <li>Lanza el escaneo de la carpeta / SFTP origen</li>
+          <li>Encola y reparte el trabajo a varios workers en paralelo</li>
+          <li>El tablero muestra avance en tiempo real por archivo</li>
+          <li>Cualquier archivo con problema se puede reintentar con un click</li>
+        </ul>
+      </div>
+      <div class="visual-frame">
+        <div class="ui-mock">
+          <div class="head">PROGRESO · 7 archivos en curso</div>
+          <div class="row"><span>BOL_VG_A_2026_06.xlsx</span><span class="tag ok">100% · 4.512 filas</span></div>
+          <div class="row"><span>BOL_VG_B_2026_06.xlsx</span><span class="tag ok">100% · 2.108 filas</span></div>
+          <div class="row"><span>MAP_AUTO_2026_06.xlsx</span><span class="tag warn">68% · procesando</span></div>
+          <div class="row"><span>SURA_HOG_2026_06.xlsx</span><span class="tag warn">12% · en cola</span></div>
+          <div class="row"><span>BOL_LEGACY_2018.xls</span><span class="tag err">error: hoja faltante</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SLIDE 10: Step 8-9: quality reports ============ -->
+  <section class="slide bg-light">
+    <div class="eyebrow">Pasos 8 y 9 · Calidad</div>
+    <h2 class="title">Cada archivo deja huella.<br/>Cada novedad, en Excel.</h2>
+    <div class="card-grid" style="margin-top: 26px;">
+      <div class="feature-card">
+        <div class="icon">⎙</div>
+        <h4>Archivo original guardado</h4>
+        <p>Trazabilidad total: siempre se puede descargar exactamente lo que recibimos del origen.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">⚐</div>
+        <h4>Resumen de calidad</h4>
+        <p>Filas leídas, válidas, rechazadas, con observaciones — todo en una vista por archivo.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">⬇</div>
+        <h4>Exporte CSV / XLSX</h4>
+        <p>El reporte de novedades se descarga listo para enviar a operaciones, sin manipulación adicional.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">↻</div>
+        <h4>Reintento controlado</h4>
+        <p>Si se corrige el archivo de origen o el formato, basta un click para reprocesarlo.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SLIDE 11: Step 10: consult ============ -->
+  <section class="slide bg-dark">
+    <div class="eyebrow">Paso 10 · Consumo</div>
+    <h2 class="title">Información lista para consultar.</h2>
+    <div class="two-col text-img" style="margin-top: 26px;">
+      <div>
+        <p class="lead" style="margin-bottom: 22px;">
+          Las pólizas procesadas quedan disponibles para búsqueda inmediata: por número de crédito, documento del asegurado
+          o por producto.
+        </p>
+        <ul class="checklist">
+          <li>Búsqueda paginada — funciona con cientos de miles de pólizas</li>
+          <li>Datos estandarizados: el mismo formato sin importar el origen</li>
+          <li>Cada póliza enlaza al archivo de origen para auditoría</li>
+        </ul>
+      </div>
+      <div class="visual-frame">
+        <div class="ui-mock">
+          <div class="head">BUSCAR · crédito 4471293</div>
+          <div class="row"><span>Documento</span><span>1.020.345.678</span></div>
+          <div class="row"><span>Producto</span><span>Bolívar Vida Grupo</span></div>
+          <div class="row"><span>Prima</span><span class="tag ok">$ 18.750</span></div>
+          <div class="row"><span>Origen</span><span>BOL_VG_A_2026_06.xlsx · fila 1.247</span></div>
+          <div class="row"><span>Estado</span><span class="tag ok">vigente</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SLIDE 12: Benefits / KPIs ============ -->
+  <section class="slide bg-accent">
+    <div class="eyebrow">Valor para el negocio</div>
+    <h2 class="title">Más rápido, más auditable,<br/>más escalable.</h2>
+    <div class="kpis">
+      <div class="kpi"><div class="big">↓ 90%</div><div class="lbl">Tiempo de procesamiento por archivo</div></div>
+      <div class="kpi"><div class="big">100%</div><div class="lbl">De las novedades trazadas y exportables</div></div>
+      <div class="kpi"><div class="big">&lt; 1 día</div><div class="lbl">Para incorporar un nuevo convenio o plan</div></div>
+      <div class="kpi"><div class="big">0</div><div class="lbl">Desarrollos de software por configuración</div></div>
+    </div>
+    <p class="lead" style="margin-top: 28px;">
+      El negocio deja de depender de TI para cada cambio operativo. Operaciones gana visibilidad. Auditoría gana trazabilidad.
+    </p>
+  </section>
+
+  <!-- ============ SLIDE 13: Roles ============ -->
+  <section class="slide bg-light">
+    <div class="eyebrow">Quién hace qué</div>
+    <h2 class="title">Cada rol con su tablero.</h2>
+    <div class="roles">
+      <div class="role-card">
+        <div class="avatar">N</div>
+        <h4>Negocio</h4>
+        <p style="font-size: 14px; color: var(--text-mid);">Dueño del producto.</p>
+        <ul>
+          <li>Define productos y formatos</li>
+          <li>Mantiene primas autorizadas</li>
+          <li>Activa o pausa convenios</li>
+        </ul>
+      </div>
+      <div class="role-card ops">
+        <div class="avatar">O</div>
+        <h4>Operaciones</h4>
+        <p style="font-size: 14px; color: var(--text-mid);">Dueño del flujo diario.</p>
+        <ul>
+          <li>Lanza y monitorea el procesamiento</li>
+          <li>Descarga reportes de novedades</li>
+          <li>Reintenta archivos con error</li>
+        </ul>
+      </div>
+      <div class="role-card it">
+        <div class="avatar">T</div>
+        <h4>TI</h4>
+        <p style="font-size: 14px; color: var(--text-mid);">Dueño de la infraestructura.</p>
+        <ul>
+          <li>Onboarding inicial de la plataforma</li>
+          <li>Mantiene conectividad con orígenes</li>
+          <li>Soporte de segundo nivel</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SLIDE 14: Closing ============ -->
+  <section class="slide bg-cover">
+    <div class="eyebrow">Próximos pasos</div>
+    <h1 class="title" style="font-size: 56px;">Listos para escalar<br/>a cualquier convenio nuevo.</h1>
+    <p class="lead" style="margin-top: 20px;">
+      Configurar un nuevo producto, activar formatos, definir primas y empezar a procesar — todo en la misma plataforma,
+      el mismo día.
+    </p>
+    <div style="margin-top: 40px; display: flex; gap: 40px; flex-wrap: wrap;">
+      <div>
+        <div style="font-size: 12px; color: var(--primary-light); letter-spacing: 0.15em; text-transform: uppercase;">Demo en vivo</div>
+        <div style="font-size: 18px; margin-top: 4px;">Pide una sesión de 30 minutos.</div>
+      </div>
+      <div>
+        <div style="font-size: 12px; color: var(--primary-light); letter-spacing: 0.15em; text-transform: uppercase;">Documentación técnica</div>
+        <div style="font-size: 18px; margin-top: 4px;"><code>docs/api-guide.html</code></div>
+      </div>
+    </div>
+    <div class="footer-brand">Busk Seguros · Gracias</div>
+  </section>
+
+</div>
+
+<!-- ===== Navigation ===== -->
+<div class="slide-num" id="slideNum">01 / 14</div>
+<div class="dots" id="dots"></div>
+<div class="nav">
+  <button id="prevBtn" title="Anterior (←)">‹</button>
+  <span class="counter" id="counter">1 / 14</span>
+  <button id="nextBtn" title="Siguiente (→)">›</button>
+  <button id="fullBtn" title="Pantalla completa (F)" style="font-size:13px;">⛶</button>
+</div>
+
+<script>
+  const slides = document.querySelectorAll('.slide');
+  const total = slides.length;
+  let idx = 0;
+  const dotsEl = document.getElementById('dots');
+  const counterEl = document.getElementById('counter');
+  const slideNumEl = document.getElementById('slideNum');
+
+  for (let i = 0; i < total; i++) {
+    const d = document.createElement('div');
+    d.className = 'dot' + (i === 0 ? ' active' : '');
+    d.addEventListener('click', () => go(i));
+    dotsEl.appendChild(d);
+  }
+
+  function go(n) {
+    idx = (n + total) % total;
+    slides.forEach((s, i) => s.classList.toggle('active', i === idx));
+    dotsEl.querySelectorAll('.dot').forEach((d, i) => d.classList.toggle('active', i === idx));
+    counterEl.textContent = (idx + 1) + ' / ' + total;
+    slideNumEl.textContent = String(idx + 1).padStart(2, '0') + ' / ' + String(total).padStart(2, '0');
+  }
+
+  document.getElementById('prevBtn').addEventListener('click', () => go(idx - 1));
+  document.getElementById('nextBtn').addEventListener('click', () => go(idx + 1));
+  document.getElementById('fullBtn').addEventListener('click', () => {
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+    else document.exitFullscreen();
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') go(idx + 1);
+    else if (e.key === 'ArrowLeft' || e.key === 'PageUp') go(idx - 1);
+    else if (e.key === 'Home') go(0);
+    else if (e.key === 'End') go(total - 1);
+    else if (e.key === 'f' || e.key === 'F') document.getElementById('fullBtn').click();
+  });
+</script>
+
+</body>
+</html>
