@@ -1107,7 +1107,7 @@ func mapfreVidaInclusionVFMappings() []model.FieldMap {
 }
 
 func seed(st *store.Store) {
-	_ = st.UpsertGlobalRuleParam("date_layouts_csv", "2006-01-02,02/01/2006,2/1/2006,02-01-2006,2006/01/02,01/02/2006,01-02-06,1-2-06,01/02/06,1/2/06")
+	_ = st.UpsertGlobalRuleParam("date_layouts_csv", "2006-01-02,02/01/2006,2/1/2006,02-01-2006,2006/01/02,02-01-06,2-1-06,02/01/06,2/1/06")
 	_ = st.UpsertGlobalRuleParam("mapfre_cancel_keywords_csv", "ANUL,TERMINAD,SINIEST")
 
 	st.UpsertProduct(model.Product{

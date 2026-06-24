@@ -98,7 +98,7 @@ func TestValidationReport_EmailXLSXUnicaHoja(t *testing.T) {
 		t.Fatalf("encabezado + 2 filas (bloqueante e informativa), got %d", len(rows))
 	}
 	header := rows[0]
-	if header[0] != "fila_excel" || header[1] != "estado_poliza" || header[len(header)-1] != "novedades" {
+	if header[0] != "fila_excel" || header[1] != "estado_poliza" || header[len(header)-2] != "observaciones" || header[len(header)-1] != "novedades" {
 		t.Fatalf("encabezado inesperado: %v", header)
 	}
 	if rows[1][0] != "3" {
@@ -106,6 +106,9 @@ func TestValidationReport_EmailXLSXUnicaHoja(t *testing.T) {
 	}
 	if !strings.Contains(rows[1][len(rows[1])-1], "prima no válida") {
 		t.Fatalf("novedades fila 3: %q", rows[1][len(rows[1])-1])
+	}
+	if rows[1][len(rows[1])-2] == "" {
+		t.Fatalf("observaciones fila 3 vacías")
 	}
 	if rows[2][0] != "5" {
 		t.Fatalf("segunda fila debe ser la 5 (informativa), got %v", rows[2])
@@ -224,10 +227,13 @@ func TestValidationReport_MirrorSheetConDatosArchivo(t *testing.T) {
 	if len(rows) < 2 {
 		t.Fatalf("mirror rows=%d", len(rows))
 	}
-	if rows[0][len(rows[0])-1] != "novedades" {
-		t.Fatalf("última columna debe ser novedades: %v", rows[0])
+	if rows[0][len(rows[0])-2] != "observaciones" || rows[0][len(rows[0])-1] != "novedades" {
+		t.Fatalf("columnas finales: %v", rows[0])
 	}
 	if !strings.Contains(rows[1][len(rows[1])-1], "prima") {
 		t.Fatalf("novedades: %s", rows[1][len(rows[1])-1])
+	}
+	if !strings.Contains(rows[1][len(rows[1])-2], "REVISAR") {
+		t.Fatalf("observaciones: %s", rows[1][len(rows[1])-2])
 	}
 }

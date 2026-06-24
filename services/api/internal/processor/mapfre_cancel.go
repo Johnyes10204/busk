@@ -47,7 +47,7 @@ func mapfreCancelacionViolacionesFechas(values map[string]string, cfg ruleRuntim
 
 	var out []string
 	if end.Day() != act.Day() {
-		out = append(out, mensajeCancelacionFinActivMismoDia(end, act))
+		out = append(out, mensajeCancelacionFinActivMismoDia(endRaw, actRaw))
 	}
 
 	labelYear, labelMonth, okLabel := mapfreMesEtiquetaCancelacion(values)
@@ -56,7 +56,7 @@ func mapfreCancelacionViolacionesFechas(values map[string]string, cfg ruleRuntim
 		return out
 	}
 	if end.Year() != labelYear || end.Month() != labelMonth {
-		out = append(out, mensajeCancelacionFinFueraMesEtiqueta(end, labelYear, labelMonth))
+		out = append(out, mensajeCancelacionFinFueraMesEtiqueta(endRaw, labelYear, labelMonth))
 	}
 	return out
 }
@@ -161,22 +161,15 @@ func pad2(n int) string {
 }
 
 func parseVigenciaDate(raw string, layouts []string) (time.Time, bool) {
-	for _, order := range []dateFieldOrder{dateOrderMDY, dateOrderDMY} {
-		t := parseVigenciaDateWithLayoutsOrder(raw, layouts, order)
-		if !t.IsZero() {
-			return t, true
-		}
-	}
-	return time.Time{}, false
+	t := parseDateField(raw, layouts, dateYearContextVigencia)
+	return t, !t.IsZero()
 }
 
 func parseMapfreCancelacionDatePair(endRaw, actRaw string, layouts []string) (end, act time.Time, ok bool) {
-	for _, order := range []dateFieldOrder{dateOrderMDY, dateOrderDMY} {
-		end = parseVigenciaDateWithLayoutsOrder(endRaw, layouts, order)
-		act = parseVigenciaDateWithLayoutsOrder(actRaw, layouts, order)
-		if !end.IsZero() && !act.IsZero() {
-			return end, act, true
-		}
+	end = parseDateField(endRaw, layouts, dateYearContextVigencia)
+	act = parseDateField(actRaw, layouts, dateYearContextVigencia)
+	if !end.IsZero() && !act.IsZero() {
+		return end, act, true
 	}
 	return time.Time{}, time.Time{}, false
 }

@@ -40,8 +40,7 @@ func resolveYear(y int, ctx dateYearContext) int {
 	}
 }
 
-// parseDateFieldOrder interpreta una fecha con el orden indicado (DMY o MDY).
-func parseDateFieldOrder(raw string, layouts []string, order dateFieldOrder, ctx dateYearContext) time.Time {
+func parseDateNonNumeric(raw string, layouts []string) time.Time {
 	s := normalizeDateRaw(raw)
 	if s == "" {
 		return time.Time{}
@@ -56,18 +55,25 @@ func parseDateFieldOrder(raw string, layouts []string, order dateFieldOrder, ctx
 	if t, ok := parseExcelSerialDateString(s); ok {
 		return t
 	}
+	return time.Time{}
+}
+
+// parseDateFieldOrder interpreta una fecha numérica con el orden indicado (DMY o MDY).
+func parseDateFieldOrder(raw string, layouts []string, order dateFieldOrder, ctx dateYearContext) time.Time {
+	if t := parseDateNonNumeric(raw, layouts); !t.IsZero() {
+		return t
+	}
+	s := normalizeDateRaw(raw)
 	if t, ok := parseNumericDateWithContext(s, order, ctx); ok {
 		return t
 	}
 	return time.Time{}
 }
 
-// parseDateField prueba día/mes/año y luego mes/día/año; devuelve la primera válida.
+// parseDateField interpreta fechas numéricas únicamente como día/mes/año.
+// Las celdas con mes > 12 (p. ej. 05-14-26) se consideran inválidas: no se infiere mes/día/año.
 func parseDateField(raw string, layouts []string, ctx dateYearContext) time.Time {
-	if t := parseDateFieldOrder(raw, layouts, dateOrderDMY, ctx); !t.IsZero() {
-		return t
-	}
-	return parseDateFieldOrder(raw, layouts, dateOrderMDY, ctx)
+	return parseDateFieldOrder(raw, layouts, dateOrderDMY, ctx)
 }
 
 func parseNumericDateWithContext(s string, order dateFieldOrder, ctx dateYearContext) (time.Time, bool) {
@@ -96,58 +102,16 @@ func dateFieldParseable(raw string, layouts []string, ctx dateYearContext) bool 
 	return !parseDateField(raw, layouts, ctx).IsZero()
 }
 
-// parseDateFieldMDYFirst: formato numérico típico MAPFRE en Excel (mes/día/año antes que día/mes/año).
-func parseDateFieldMDYFirst(raw string, layouts []string, ctx dateYearContext) time.Time {
-	if t := parseDateFieldOrder(raw, layouts, dateOrderMDY, ctx); !t.IsZero() {
-		return t
-	}
-	return parseDateFieldOrder(raw, layouts, dateOrderDMY, ctx)
-}
-
-// parseDateFieldDMYFirst: inclusiones Bolívar (día/mes/año antes que mes/día/año).
-func parseDateFieldDMYFirst(raw string, layouts []string, ctx dateYearContext) time.Time {
-	if t := parseDateFieldOrder(raw, layouts, dateOrderDMY, ctx); !t.IsZero() {
-		return t
-	}
-	return parseDateFieldOrder(raw, layouts, dateOrderMDY, ctx)
-}
-
-// parseBirthDateDMYDayGreaterThan12: 27-09-46 → día 27, mes 9 (cuando el primer segmento > 12).
-func parseBirthDateDMYDayGreaterThan12(raw string) time.Time {
-	m := numericDatePattern.FindStringSubmatch(normalizeDateRaw(raw))
-	if m == nil {
-		return time.Time{}
-	}
-	a, err1 := strconv.Atoi(m[1])
-	b, err2 := strconv.Atoi(m[2])
-	y, err3 := strconv.Atoi(m[3])
-	if err1 != nil || err2 != nil || err3 != nil {
-		return time.Time{}
-	}
-	y = resolveYear(y, dateYearContextBirth)
-	if a > 12 && b <= 12 {
-		return calendarDateUTC(b, a, y)
-	}
-	return time.Time{}
-}
-
-// parseBirthDate interpreta la fecha de nacimiento (regla de edad; no es validación de vigencia).
+// parseBirthDate interpreta la fecha de nacimiento (regla de edad).
 func parseBirthDate(raw string, layouts []string, mapfreSheet bool) time.Time {
-	ctx := dateYearContextBirth
-	if mapfreSheet {
-		return parseDateFieldMDYFirst(raw, layouts, ctx)
-	}
-	return parseDateField(raw, layouts, ctx)
+	_ = mapfreSheet
+	return parseDateField(raw, layouts, dateYearContextBirth)
 }
 
 // parseBirthDateOrders devuelve ambas lecturas posibles para informes (DMY y MDY).
 func parseBirthDateOrders(raw string, layouts []string, mapfreSheet bool) (dmy, mdy time.Time) {
 	ctx := dateYearContextBirth
-	if mapfreSheet {
-		mdy = parseDateFieldOrder(raw, layouts, dateOrderMDY, ctx)
-		dmy = parseDateFieldOrder(raw, layouts, dateOrderDMY, ctx)
-		return dmy, mdy
-	}
+	_ = mapfreSheet
 	dmy = parseDateFieldOrder(raw, layouts, dateOrderDMY, ctx)
 	mdy = parseDateFieldOrder(raw, layouts, dateOrderMDY, ctx)
 	return dmy, mdy
@@ -155,17 +119,14 @@ func parseBirthDateOrders(raw string, layouts []string, mapfreSheet bool) (dmy, 
 
 // parseAgeReferenceDate parsea la fecha de activación (edad de ingreso = edad en ese día).
 func parseAgeReferenceDate(raw string, layouts []string, mapfreSheet bool, productCode string) time.Time {
-	if mapfreSheet {
-		return parseDateFieldMDYFirst(raw, layouts, dateYearContextVigencia)
-	}
-	// Bolívar: misma convención que parseBolivarFechaInclusion (mes/día/año en celdas con guiones).
+	_ = mapfreSheet
 	if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(productCode)), "BOLIVAR") {
 		return bolivarVigenciaFecha(raw, layouts)
 	}
 	return parseDateField(raw, layouts, dateYearContextVigencia)
 }
 
-// parseMapfreVigenciaDate: inicio/fin de vigencia y plazo (validación de vigencias, aparte de edad).
+// parseMapfreVigenciaDate: inicio/fin de vigencia y plazo.
 func parseMapfreVigenciaDate(raw string, layouts []string) time.Time {
-	return parseDateFieldMDYFirst(raw, layouts, dateYearContextVigencia)
+	return parseDateField(raw, layouts, dateYearContextVigencia)
 }

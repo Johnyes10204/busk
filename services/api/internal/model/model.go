@@ -58,6 +58,7 @@ type FileProcessRecord struct {
 	FileHash             string            `json:"file_hash,omitempty"`
 	Status               FileProcessStatus `json:"status"`
 	ErrorReason          string            `json:"error_reason,omitempty"`
+	EmailError           string            `json:"email_error,omitempty"`
 	ValidationReportJSON string            `json:"validation_report_json,omitempty"`
 	RemotePath           string            `json:"remote_path"`
 	ProcessedPath        string            `json:"processed_path,omitempty"`

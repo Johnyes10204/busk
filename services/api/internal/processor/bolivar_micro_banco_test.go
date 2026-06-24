@@ -164,7 +164,7 @@ func TestMicroBancoAbrilArchivo_TodasLasFilas(t *testing.T) {
 		}
 
 		hard, soft := applyBolivarDiagramRules(values, cfg)
-		hard = append(hard, mensajesFechasRequeridas(values, cfg)...)
+		hard = append(hard, mensajesFechasRequeridas(values, cfg, "BOLIVAR_MICRO_BANCO")...)
 		totalHard += len(hard)
 		totalSoft += len(soft)
 	}

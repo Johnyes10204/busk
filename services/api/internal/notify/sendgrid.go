@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -23,23 +24,30 @@ const (
 	emailZipPreferMinBytes  = 2 << 20 // archivos grandes: intentar ZIP primero (evita 413 de nginx)
 )
 
-type ErrorEmailInput struct {
+type FileEmailInput struct {
 	FileID               string
 	FileName             string
 	ProductID            string
 	Status               string
 	ErrorReason          string
 	ValidationReportJSON string
+	ArchivePath          string
 	ProcessedAt          time.Time
 }
 
-type ErrorNotifier interface {
-	NotifyFileProcessingError(input ErrorEmailInput) error
+// ErrorEmailInput mantiene compatibilidad con referencias previas.
+type ErrorEmailInput = FileEmailInput
+
+type FileNotifier interface {
+	NotifyFileProcessing(input FileEmailInput) error
 }
+
+// ErrorNotifier mantiene compatibilidad con referencias previas.
+type ErrorNotifier = FileNotifier
 
 type noopNotifier struct{}
 
-func (n *noopNotifier) NotifyFileProcessingError(input ErrorEmailInput) error {
+func (n *noopNotifier) NotifyFileProcessing(input FileEmailInput) error {
 	return nil
 }
 
@@ -49,7 +57,7 @@ type sendGridNotifier struct {
 	recipients []string
 }
 
-func NewErrorNotifierFromEnv() ErrorNotifier {
+func NewFileNotifierFromEnv() FileNotifier {
 	apiKey := strings.TrimSpace(os.Getenv("SENDGRID_API_KEY"))
 	from := strings.TrimSpace(os.Getenv("SENDGRID_FROM_EMAIL"))
 	recipients := splitRecipients(os.Getenv("SENDGRID_ERROR_TO_EMAILS"))
@@ -64,7 +72,131 @@ func NewErrorNotifierFromEnv() ErrorNotifier {
 	}
 }
 
-func (n *sendGridNotifier) NotifyFileProcessingError(input ErrorEmailInput) error {
+// NewErrorNotifierFromEnv es alias de NewFileNotifierFromEnv.
+func NewErrorNotifierFromEnv() FileNotifier {
+	return NewFileNotifierFromEnv()
+}
+
+func (n *sendGridNotifier) NotifyFileProcessing(input FileEmailInput) error {
+	switch strings.ToUpper(strings.TrimSpace(input.Status)) {
+	case "PROCESSED":
+		return n.notifyProcessedSuccess(input)
+	case "ERROR":
+		return n.notifyProcessingError(input)
+	default:
+		return nil
+	}
+}
+
+func (n *sendGridNotifier) notifyProcessedSuccess(input FileEmailInput) error {
+	attachments, hasNovedades, err := n.processedSuccessAttachments(input)
+	if err != nil {
+		return err
+	}
+	archiveURL := archiveDownloadURL(input.FileID)
+	reportURL := validationReportDownloadURL(input.FileID)
+	client := sendgrid.NewSendClient(n.apiKey)
+
+	send := func(atts []emailAttachment) (statusCode int, body string, err error) {
+		msg := n.composeSuccessMail(input, atts, hasNovedades, archiveURL, reportURL)
+		r, e := client.Send(msg)
+		if e != nil {
+			return 0, "", e
+		}
+		return r.StatusCode, r.Body, nil
+	}
+
+	trySend := func(atts []emailAttachment) (ok bool, status int, body string, err error) {
+		if len(atts) == 0 {
+			return false, 0, "", nil
+		}
+		total := 0
+		for _, a := range atts {
+			total += len(a.data)
+		}
+		if total > maxEmailAttachmentBytes {
+			log.Printf("[notify] adjuntos éxito demasiado grandes file_id=%s bytes=%d max=%d", input.FileID, total, maxEmailAttachmentBytes)
+			return false, 0, "", nil
+		}
+		st, b, e := send(atts)
+		if e != nil {
+			return false, st, b, e
+		}
+		if st >= 200 && st < 300 {
+			log.Printf("[notify] sendgrid aceptó correo éxito file_id=%s adjuntos=%d bytes=%d novedades=%t",
+				input.FileID, len(atts), total, hasNovedades)
+			return true, st, b, nil
+		}
+		return false, st, b, nil
+	}
+
+	if ok, st, _, err := trySend(attachments); err != nil {
+		return err
+	} else if ok {
+		return nil
+	} else if st == 413 && len(attachments) > 1 {
+		log.Printf("[notify] 413 con todos los adjuntos; reintento solo informe file_id=%s", input.FileID)
+		if ok, _, _, err := trySend(attachments[:1]); err != nil {
+			return err
+		} else if ok {
+			return nil
+		}
+	}
+
+	log.Printf("[notify] reintentando correo de éxito sin adjunto file_id=%s", input.FileID)
+	status2, body2, err2 := send(nil)
+	if err2 != nil {
+		return err2
+	}
+	if status2 >= 200 && status2 < 300 {
+		return nil
+	}
+	return fmt.Errorf("sendgrid (éxito sin adjunto) status=%d body=%s", status2, strings.TrimSpace(truncateForLog(body2, 1800)))
+}
+
+func (n *sendGridNotifier) processedSuccessAttachments(input FileEmailInput) ([]emailAttachment, bool, error) {
+	var out []emailAttachment
+	hasNovedades := false
+
+	if report, ok := parseValidationReport(input.ValidationReportJSON); ok && validationReportHasNovedades(report) {
+		hasNovedades = true
+		b, err := store.ValidationReportEmailXLSX(report)
+		if err != nil {
+			log.Printf("[notify] no se pudo generar Excel de novedades (éxito) file_id=%s err=%v", input.FileID, err)
+		} else if len(b) > 0 {
+			out = append(out, emailAttachment{
+				data:     b,
+				filename: validationReportAttachmentFilename(input.FileName, input.FileID, ".xlsx"),
+				mime:     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+			})
+		}
+	}
+
+	archivePath := strings.TrimSpace(input.ArchivePath)
+	if archivePath == "" {
+		if !hasNovedades {
+			log.Printf("[notify] PROCESSED sin archive_path file_id=%s", input.FileID)
+		}
+		return out, hasNovedades, nil
+	}
+	originalBytes, err := os.ReadFile(archivePath)
+	if err != nil {
+		return out, hasNovedades, fmt.Errorf("leer archivo archivado: %w", err)
+	}
+	if len(originalBytes) > 0 {
+		cands := originalFileAttachmentCandidates(input.FileName, originalBytes)
+		if len(cands) > 0 {
+			out = append(out, cands[0])
+		}
+	}
+	return out, hasNovedades, nil
+}
+
+func validationReportHasNovedades(r store.FileValidationReport) bool {
+	return r.TotalInformativeValidations > 0 || r.TotalPendingValidations > 0
+}
+
+func (n *sendGridNotifier) notifyProcessingError(input FileEmailInput) error {
 	client := sendgrid.NewSendClient(n.apiKey)
 
 	var xlsxBytes []byte
@@ -211,6 +343,14 @@ func zipEmailAttachment(innerName string, data []byte) ([]byte, string, error) {
 }
 
 func validationReportDownloadURL(fileID string) string {
+	return publicFileURL("/api/v1/files/validation-xlsx?file_id=", fileID)
+}
+
+func archiveDownloadURL(fileID string) string {
+	return publicFileURL("/api/v1/files/download?file_id=", fileID)
+}
+
+func publicFileURL(pathPrefix, fileID string) string {
 	fileID = strings.TrimSpace(fileID)
 	if fileID == "" {
 		return ""
@@ -222,7 +362,7 @@ func validationReportDownloadURL(fileID string) string {
 	if base == "" {
 		return ""
 	}
-	return base + "/api/v1/files/validation-xlsx?file_id=" + url.QueryEscape(fileID)
+	return base + pathPrefix + url.QueryEscape(fileID)
 }
 
 func truncateForLog(s string, max int) string {
@@ -233,7 +373,7 @@ func truncateForLog(s string, max int) string {
 	return s[:max] + "…"
 }
 
-func (n *sendGridNotifier) composeErrorMail(input ErrorEmailInput, attach *emailAttachment, bodyMentionsReport bool, downloadURL string) *sgmail.SGMailV3 {
+func (n *sendGridNotifier) composeErrorMail(input FileEmailInput, attach *emailAttachment, bodyMentionsReport bool, downloadURL string) *sgmail.SGMailV3 {
 	from := sgmail.NewEmail("Busk Seguros", n.from)
 	subject := fmt.Sprintf("[Busk Seguros] Novedades en archivo %s", strings.TrimSpace(input.FileName))
 
@@ -263,6 +403,41 @@ func (n *sendGridNotifier) composeErrorMail(input ErrorEmailInput, attach *email
 	return message
 }
 
+func (n *sendGridNotifier) composeSuccessMail(input FileEmailInput, attachments []emailAttachment, hasNovedades bool, archiveDownloadURL, reportDownloadURL string) *sgmail.SGMailV3 {
+	from := sgmail.NewEmail("Busk Seguros", n.from)
+	subject := fmt.Sprintf("[Busk Seguros] Archivo procesado correctamente: %s", strings.TrimSpace(input.FileName))
+	if hasNovedades {
+		subject = fmt.Sprintf("[Busk Seguros] Archivo procesado con novedades: %s", strings.TrimSpace(input.FileName))
+	}
+
+	message := sgmail.NewV3Mail()
+	message.SetFrom(from)
+	message.Subject = subject
+	p := sgmail.NewPersonalization()
+	for _, to := range n.recipients {
+		p.AddTos(sgmail.NewEmail("", to))
+	}
+	message.AddPersonalizations(p)
+
+	for _, attach := range attachments {
+		if len(attach.data) == 0 {
+			continue
+		}
+		att := sgmail.NewAttachment()
+		att.SetContent(base64.StdEncoding.EncodeToString(attach.data))
+		att.SetType(attach.mime)
+		att.SetFilename(attach.filename)
+		att.SetDisposition("attachment")
+		message.AddAttachment(att)
+	}
+
+	plainText := buildSuccessPlainBody(input, len(attachments) > 0, hasNovedades, archiveDownloadURL, reportDownloadURL)
+	htmlBody := buildSuccessHTMLBody(input, len(attachments) > 0, hasNovedades, archiveDownloadURL, reportDownloadURL)
+	message.AddContent(sgmail.NewContent("text/plain", plainText))
+	message.AddContent(sgmail.NewContent("text/html", htmlBody))
+	return message
+}
+
 type reportEmailData struct {
 	FileName                string
 	ProductID               string
@@ -280,7 +455,7 @@ type reportEmailData struct {
 	DetalleCarga            string
 }
 
-func buildReportEmailData(input ErrorEmailInput, adjuntoExcel bool, downloadURL string) reportEmailData {
+func buildReportEmailData(input FileEmailInput, adjuntoExcel bool, downloadURL string) reportEmailData {
 	data := reportEmailData{
 		FileName:           strings.TrimSpace(input.FileName),
 		ProductID:          emptyFallback(input.ProductID, "No identificado"),
@@ -344,7 +519,7 @@ func etiquetaEstadoArchivo(status string) string {
 	}
 }
 
-func buildPlainBody(input ErrorEmailInput, adjuntoExcel, tieneInforme bool, downloadURL string) string {
+func buildPlainBody(input FileEmailInput, adjuntoExcel, tieneInforme bool, downloadURL string) string {
 	d := buildReportEmailData(input, adjuntoExcel, downloadURL)
 	var b strings.Builder
 	b.WriteString("Busk Seguros — Informe de procesamiento de archivo\n")
@@ -378,7 +553,7 @@ func buildPlainBody(input ErrorEmailInput, adjuntoExcel, tieneInforme bool, down
 	return strings.TrimSpace(b.String())
 }
 
-func buildHTMLBody(input ErrorEmailInput, adjuntoExcel, tieneInforme bool, downloadURL string) string {
+func buildHTMLBody(input FileEmailInput, adjuntoExcel, tieneInforme bool, downloadURL string) string {
 	data := buildReportEmailData(input, adjuntoExcel, downloadURL)
 	tpl, err := template.New("error-email").Parse(errorEmailTemplate)
 	if err != nil {
@@ -410,30 +585,143 @@ func validationReportAttachmentFilename(fileName, fileID, ext string) string {
 	if ext[0] != '.' {
 		ext = "." + ext
 	}
-	base := strings.TrimSpace(fileName)
+	base := sanitizeAttachmentFilename(fileName)
 	if base == "" {
 		base = "archivo"
 	}
-	var b strings.Builder
-	for _, r := range base {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '-' {
-			b.WriteRune(r)
-		} else {
-			b.WriteRune('_')
-		}
-	}
-	s := b.String()
-	if len(s) > 80 {
-		s = s[:80]
+	if len(base) > 80 {
+		base = base[:80]
 	}
 	id := strings.TrimSpace(fileID)
 	if len(id) > 12 {
 		id = id[:12]
 	}
 	if id == "" {
-		return "novedades_" + s + ext
+		return "novedades_" + base + ext
 	}
-	return "novedades_" + s + "_" + id + ext
+	return "novedades_" + base + "_" + id + ext
+}
+
+func originalFileAttachmentCandidates(fileName string, data []byte) []emailAttachment {
+	safeName := sanitizeAttachmentFilename(fileName)
+	if safeName == "" {
+		safeName = "archivo.xlsx"
+	}
+	fileAtt := emailAttachment{
+		data:     data,
+		filename: safeName,
+		mime:     mimeForFileName(safeName),
+	}
+	out := []emailAttachment{fileAtt}
+	zipBytes, zipName, err := zipEmailAttachment(safeName, data)
+	if err != nil || len(zipBytes) == 0 {
+		return out
+	}
+	zipAtt := emailAttachment{data: zipBytes, filename: zipName, mime: "application/zip"}
+	if len(data) >= emailZipPreferMinBytes {
+		return []emailAttachment{zipAtt, fileAtt}
+	}
+	return []emailAttachment{fileAtt, zipAtt}
+}
+
+func sanitizeAttachmentFilename(fileName string) string {
+	base := strings.TrimSpace(fileName)
+	if base == "" {
+		return ""
+	}
+	base = filepath.Base(base)
+	var b strings.Builder
+	for _, r := range base {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '-' || r == '_' || r == ' ' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('_')
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func mimeForFileName(fileName string) string {
+	switch strings.ToLower(filepath.Ext(fileName)) {
+	case ".xlsx":
+		return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	case ".xls":
+		return "application/vnd.ms-excel"
+	case ".csv":
+		return "text/csv"
+	default:
+		return "application/octet-stream"
+	}
+}
+
+func buildSuccessPlainBody(input FileEmailInput, adjuntos bool, hasNovedades bool, archiveDownloadURL, reportDownloadURL string) string {
+	fileName := strings.TrimSpace(input.FileName)
+	productID := emptyFallback(input.ProductID, "No identificado")
+	processedAt := "No disponible"
+	if !input.ProcessedAt.IsZero() {
+		processedAt = input.ProcessedAt.UTC().Format("02/01/2006 15:04") + " (UTC)"
+	}
+	var b strings.Builder
+	b.WriteString("Busk Seguros — Archivo procesado\n")
+	b.WriteString(strings.Repeat("=", 48) + "\n\n")
+	if hasNovedades {
+		b.WriteString("El archivo se cargó correctamente, pero hay filas con novedades informativas que debe revisar.\n\n")
+	} else {
+		b.WriteString("El archivo se cargó en el sistema sin novedades.\n\n")
+	}
+	b.WriteString("Archivo: " + fileName + "\n")
+	b.WriteString("Producto: " + productID + "\n")
+	b.WriteString("Estado: Procesado\n")
+	b.WriteString("Procesado: " + processedAt + "\n\n")
+	if adjuntos {
+		if hasNovedades {
+			b.WriteString("Adjuntos: informe Excel de novedades y archivo original recibido.\n\n")
+		} else {
+			b.WriteString("Adjunto: archivo original recibido, sin modificaciones.\n\n")
+		}
+	} else {
+		if hasNovedades && strings.TrimSpace(reportDownloadURL) != "" {
+			b.WriteString("Descargue el informe de novedades:\n" + reportDownloadURL + "\n\n")
+		}
+		if strings.TrimSpace(archiveDownloadURL) != "" {
+			b.WriteString("Descargue el archivo original:\n" + archiveDownloadURL + "\n\n")
+		}
+	}
+	b.WriteString("— Busk Seguros · Procesamiento automático de inclusiones\n")
+	return strings.TrimSpace(b.String())
+}
+
+func buildSuccessHTMLBody(input FileEmailInput, adjuntos bool, hasNovedades bool, archiveDownloadURL, reportDownloadURL string) string {
+	tpl, err := template.New("success-email").Parse(successEmailTemplate)
+	if err != nil {
+		return strings.ReplaceAll(buildSuccessPlainBody(input, adjuntos, hasNovedades, archiveDownloadURL, reportDownloadURL), "\n", "<br>")
+	}
+	data := struct {
+		FileName             string
+		ProductID            string
+		ProcesadoEn          string
+		HasNovedades         bool
+		Adjuntos             bool
+		DescargaArchivoURL   string
+		DescargaInformeURL   string
+	}{
+		FileName:           strings.TrimSpace(input.FileName),
+		ProductID:          emptyFallback(input.ProductID, "No identificado"),
+		HasNovedades:       hasNovedades,
+		Adjuntos:           adjuntos,
+		DescargaArchivoURL: strings.TrimSpace(archiveDownloadURL),
+		DescargaInformeURL: strings.TrimSpace(reportDownloadURL),
+	}
+	if !input.ProcessedAt.IsZero() {
+		data.ProcesadoEn = input.ProcessedAt.UTC().Format("02/01/2006 15:04") + " (UTC)"
+	} else {
+		data.ProcesadoEn = "No disponible"
+	}
+	var b bytes.Buffer
+	if err := tpl.Execute(&b, data); err != nil {
+		return strings.ReplaceAll(buildSuccessPlainBody(input, adjuntos, hasNovedades, archiveDownloadURL, reportDownloadURL), "\n", "<br>")
+	}
+	return b.String()
 }
 
 func splitRecipients(raw string) []string {
@@ -519,6 +807,75 @@ const errorEmailTemplate = `
               <p style="margin:0;font-size:14px;line-height:1.5;color:#0b3d91;">
                 <strong>Descargar informe Excel:</strong>
                 <a href="{{.DescargaInformeURL}}" style="color:#0b3d91;">{{.DescargaInformeURL}}</a>
+              </p>
+            </div>
+            {{end}}
+          </td>
+        </tr>
+        <tr>
+          <td style="background:#f0f2f5;padding:16px 28px;border-top:1px solid #e5e7eb;">
+            <p style="margin:0;font-size:12px;color:#888;line-height:1.4;">
+              Mensaje automático del sistema de procesamiento Busk Seguros. No responda a este correo.
+            </p>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
+`
+
+const successEmailTemplate = `
+<!doctype html>
+<html lang="es">
+<head><meta charset="UTF-8"></head>
+<body style="margin:0;padding:0;background:#f4f6f8;font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6f8;padding:24px 12px;">
+    <tr><td align="center">
+      <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.06);">
+        <tr>
+          <td style="background:#0d6b3a;padding:20px 28px;">
+            <p style="margin:0;font-size:13px;color:#b8e6cc;letter-spacing:0.5px;text-transform:uppercase;">Busk Seguros</p>
+            <h1 style="margin:6px 0 0;font-size:20px;font-weight:600;color:#ffffff;line-height:1.3;">Archivo procesado correctamente</h1>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:28px;">
+            {{if .HasNovedades}}
+            <p style="margin:0 0 20px;font-size:15px;line-height:1.5;color:#333;">El archivo se cargó correctamente, pero hay filas con novedades informativas que debe revisar.</p>
+            {{else}}
+            <p style="margin:0 0 20px;font-size:15px;line-height:1.5;color:#333;">El archivo se cargó en el sistema sin novedades.</p>
+            {{end}}
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:14px;margin-bottom:24px;">
+              <tr><td style="padding:6px 0;color:#666;width:140px;vertical-align:top;">Archivo</td><td style="padding:6px 0;color:#1a1a1a;"><strong>{{.FileName}}</strong></td></tr>
+              <tr><td style="padding:6px 0;color:#666;">Producto</td><td style="padding:6px 0;color:#1a1a1a;">{{.ProductID}}</td></tr>
+              <tr><td style="padding:6px 0;color:#666;">Estado</td><td style="padding:6px 0;color:#1a1a1a;">Procesado</td></tr>
+              <tr><td style="padding:6px 0;color:#666;">Fecha de proceso</td><td style="padding:6px 0;color:#1a1a1a;">{{.ProcesadoEn}}</td></tr>
+            </table>
+            {{if .Adjuntos}}
+            <div style="background:#eef9f1;padding:16px;border-radius:6px;margin-bottom:8px;">
+              <p style="margin:0;font-size:14px;line-height:1.5;color:#0d6b3a;">
+                {{if .HasNovedades}}
+                <strong>Adjuntos:</strong> informe Excel de novedades y archivo original recibido.
+                {{else}}
+                <strong>Adjunto:</strong> archivo original recibido, sin modificaciones.
+                {{end}}
+              </p>
+            </div>
+            {{else if .DescargaInformeURL}}
+            <div style="background:#eef9f1;padding:16px;border-radius:6px;margin-bottom:8px;">
+              <p style="margin:0;font-size:14px;line-height:1.5;color:#0d6b3a;">
+                <strong>Descargar informe de novedades:</strong>
+                <a href="{{.DescargaInformeURL}}" style="color:#0d6b3a;">{{.DescargaInformeURL}}</a>
+              </p>
+            </div>
+            {{end}}
+            {{if and (not .Adjuntos) .DescargaArchivoURL}}
+            <div style="background:#eef9f1;padding:16px;border-radius:6px;margin-bottom:8px;">
+              <p style="margin:0;font-size:14px;line-height:1.5;color:#0d6b3a;">
+                <strong>Descargar archivo original:</strong>
+                <a href="{{.DescargaArchivoURL}}" style="color:#0d6b3a;">{{.DescargaArchivoURL}}</a>
               </p>
             </div>
             {{end}}

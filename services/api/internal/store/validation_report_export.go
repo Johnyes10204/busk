@@ -12,11 +12,12 @@ import (
 
 const frozenInformativeNote = "La prima mensual es cero; la póliza se registra como congelada (no bloquea la carga del archivo)."
 
-// FileExportedRow replica una fila del archivo procesada más el texto de novedades.
+// FileExportedRow replica una fila del archivo procesada más observaciones resumidas y novedades.
 type FileExportedRow struct {
 	RowNumber    int               `json:"row_number"`
 	PolicyStatus string            `json:"policy_status"`
 	Data         map[string]string `json:"data,omitempty"`
+	Observaciones string           `json:"observaciones"`
 	Novedades    string            `json:"novedades"`
 }
 
@@ -127,16 +128,18 @@ func buildFileExportedRows(inputs []policyRowInput) (sourceCols []string, rows [
 			continue
 		}
 		raw := parseRawDataMap(in.RawDataJSON)
-		novedades := formatNovedadesColumn(trimNotesPreserveAll(blocking))
+		trimmed := trimNotesPreserveAll(blocking)
+		novedades := formatNovedadesColumn(trimmed)
 		if strings.TrimSpace(novedades) == "" {
 			novedades = defaultPendingRowDetailMessage(in.PolicyStatus, len(blocking) > 0)
 		}
 		failedInputs = append(failedInputs, in)
 		rows = append(rows, FileExportedRow{
-			RowNumber:    in.RowNumber,
-			PolicyStatus: strings.TrimSpace(in.PolicyStatus),
-			Data:         raw,
-			Novedades:    novedades,
+			RowNumber:     in.RowNumber,
+			PolicyStatus:  strings.TrimSpace(in.PolicyStatus),
+			Data:          raw,
+			Observaciones: observacionesForRow(trimmed, in.PolicyStatus),
+			Novedades:     novedades,
 		})
 	}
 	sourceCols = collectSourceColumns(failedInputs)
@@ -172,10 +175,11 @@ func buildFileExportedRowsEmail(inputs []policyRowInput) (sourceCols []string, r
 		}
 		keptInputs = append(keptInputs, in)
 		rows = append(rows, FileExportedRow{
-			RowNumber:    in.RowNumber,
-			PolicyStatus: st,
-			Data:         parseRawDataMap(in.RawDataJSON),
-			Novedades:    novedades,
+			RowNumber:     in.RowNumber,
+			PolicyStatus:  st,
+			Data:          parseRawDataMap(in.RawDataJSON),
+			Observaciones: observacionesForRow(combined, st),
+			Novedades:     novedades,
 		})
 	}
 	sourceCols = collectSourceColumns(keptInputs)
@@ -189,7 +193,7 @@ func buildFileExportedRowsEmail(inputs []policyRowInput) (sourceCols []string, r
 // (bloqueantes + informativas + revisión manual).
 func validationReportEmailMirrorRows(r FileValidationReport) [][]string {
 	prefix := []string{"fila_excel", "estado_poliza"}
-	suffix := []string{"novedades"}
+	suffix := []string{"observaciones", "novedades"}
 	header := append(append(append([]string{}, prefix...), r.EmailSourceColumns...), suffix...)
 	out := [][]string{header}
 	for _, ex := range r.EmailExportedRows {
@@ -199,16 +203,17 @@ func validationReportEmailMirrorRows(r FileValidationReport) [][]string {
 		for i, col := range r.EmailSourceColumns {
 			row[2+i] = strings.TrimSpace(ex.Data[col])
 		}
+		row[len(header)-2] = ex.Observaciones
 		row[len(header)-1] = ex.Novedades
 		out = append(out, row)
 	}
 	return out
 }
 
-// validationReportMirrorRows: columnas del archivo (orden del Excel) + fila, estado y novedades al final.
+// validationReportMirrorRows: columnas del archivo (orden del Excel) + fila, estado, observaciones y novedades al final.
 func validationReportMirrorRows(r FileValidationReport) [][]string {
 	prefix := []string{"fila_excel", "estado_poliza"}
-	suffix := []string{"novedades"}
+	suffix := []string{"observaciones", "novedades"}
 	header := append(append(append([]string{}, prefix...), r.SourceColumns...), suffix...)
 	out := [][]string{header}
 	for _, ex := range r.ExportedRows {
@@ -218,6 +223,7 @@ func validationReportMirrorRows(r FileValidationReport) [][]string {
 		for i, col := range r.SourceColumns {
 			row[2+i] = strings.TrimSpace(ex.Data[col])
 		}
+		row[len(header)-2] = ex.Observaciones
 		row[len(header)-1] = ex.Novedades
 		out = append(out, row)
 	}
@@ -246,22 +252,30 @@ func writeValidationReportMirrorSheet(f *excelize.File, sheet string, rows [][]s
 	_ = f.SetColWidth(sheet, "A", "B", 14)
 	if ncols > 2 {
 		firstData, _ := excelize.ColumnNumberToName(3)
-		lastData, _ := excelize.ColumnNumberToName(ncols - 1)
-		if firstData != "" && lastData != "" && ncols > 3 {
+		lastData, _ := excelize.ColumnNumberToName(ncols - 2)
+		if firstData != "" && lastData != "" && ncols > 4 {
 			_ = f.SetColWidth(sheet, firstData, lastData, 18)
 		}
 	}
-	lastCol, _ := excelize.ColumnNumberToName(ncols)
-	if lastCol != "" {
-		_ = f.SetColWidth(sheet, lastCol, lastCol, 72)
+	obsCol, _ := excelize.ColumnNumberToName(ncols - 1)
+	novCol, _ := excelize.ColumnNumberToName(ncols)
+	if obsCol != "" {
+		_ = f.SetColWidth(sheet, obsCol, obsCol, 36)
+	}
+	if novCol != "" {
+		_ = f.SetColWidth(sheet, novCol, novCol, 72)
 	}
 	if len(rows) > 1 {
 		if wrapID, err := f.NewStyle(&excelize.Style{
 			Alignment: &excelize.Alignment{WrapText: true, Vertical: "top"},
 		}); err == nil {
-			lastColName, _ := excelize.ColumnNumberToName(ncols)
 			lastRow := strconv.Itoa(len(rows))
-			_ = f.SetCellStyle(sheet, lastColName+"2", lastColName+lastRow, wrapID)
+			if obsCol != "" {
+				_ = f.SetCellStyle(sheet, obsCol+"2", obsCol+lastRow, wrapID)
+			}
+			if novCol != "" {
+				_ = f.SetCellStyle(sheet, novCol+"2", novCol+lastRow, wrapID)
+			}
 		}
 	}
 	return nil

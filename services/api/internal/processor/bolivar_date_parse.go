@@ -1,6 +1,7 @@
 package processor
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -30,41 +31,19 @@ func bolivarFechaNumericaAmbigua(raw string) bool {
 	return a <= 12 && b <= 12
 }
 
-// parseBolivarFechaInclusion interpreta fechas de vigencia/crédito en inclusiones Bolívar (MICRO_BANCO).
-// El Excel exporta con guiones en mes/día/año (p. ej. 01-20-22, 05-15-26). En ambigüedad se usa MDY y se informa si DMY difiere.
+// parseBolivarFechaInclusion interpreta fechas de crédito/vigencia con deducción automática de orden.
 func parseBolivarFechaInclusion(raw string, layouts []string) bolivarFechaParse {
 	raw = strings.TrimSpace(raw)
 	out := bolivarFechaParse{Raw: raw}
 	if raw == "" {
 		return out
 	}
-	norm := normalizeDateRaw(raw)
-	if t, ok := parseExcelSerialDateString(norm); ok {
-		out.Fecha = t
-		return out
-	}
-	for _, l := range layouts {
-		if isYearFirstDateLayout(l) {
-			if t, err := time.ParseInLocation(l, norm, time.UTC); err == nil {
-				out.Fecha = t.UTC()
-				return out
-			}
-		}
-	}
 	out.DMY = parseDateFieldOrder(raw, layouts, dateOrderDMY, dateYearContextVigencia)
 	out.MDY = parseDateFieldOrder(raw, layouts, dateOrderMDY, dateYearContextVigencia)
 	if !out.DMY.IsZero() && !out.MDY.IsZero() && !sameCalendarDay(out.DMY, out.MDY) {
 		out.Ambiguo = true
-		out.Fecha = out.MDY
-		return out
 	}
-	if !out.MDY.IsZero() {
-		out.Fecha = out.MDY
-		return out
-	}
-	if !out.DMY.IsZero() {
-		out.Fecha = out.DMY
-	}
+	out.Fecha = parseDateField(raw, layouts, dateYearContextVigencia)
 	return out
 }
 
@@ -94,8 +73,7 @@ func bolivarValidarFechasCreditoInclusion(
 	if adjRaw != "" {
 		checks = append([]check{{"loan_award_date", adjRaw, "loan_award_date"}}, checks...)
 		if actRaw != "" {
-			p := parseBolivarFechaInclusion(actRaw, layouts)
-			parsed["activation_date"] = p
+			parsed["activation_date"] = parseBolivarFechaInclusion(actRaw, layouts)
 		}
 	} else if actRaw != "" {
 		checks = append([]check{{"loan_award_date", actRaw, "activation_date"}}, checks...)
@@ -103,14 +81,15 @@ func bolivarValidarFechasCreditoInclusion(
 
 	for _, c := range checks {
 		if c.raw == "" {
+			hard = append(hard, fmt.Sprintf("FALTA %s", strings.ToUpper(etiquetaCampoCanónico(c.store))))
 			continue
 		}
 		p := parseBolivarFechaInclusion(c.raw, layouts)
 		parsed[c.store] = p
 		if p.Fecha.IsZero() && bolivarFechaNumericaAmbigua(c.raw) {
-			hard = append(hard, mensajeFechaBolivarNoInterpretable(values, c.canon))
+			hard = append(hard, mensajeFechaBolivarNoInterpretable(c.raw, c.canon))
 		} else if p.Fecha.IsZero() {
-			hard = append(hard, mensajeFechaBolivarInvalida(values, c.canon))
+			hard = append(hard, mensajeFechaBolivarInvalida(c.raw, c.canon))
 		}
 	}
 	return hard, soft, parsed

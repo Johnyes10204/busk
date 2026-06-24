@@ -205,12 +205,20 @@ func mensajeReglaFormato(r model.RuleConfig, values map[string]string, frozen bo
 	return out
 }
 
-func mensajesFechasRequeridas(values map[string]string, cfg ruleRuntimeConfig) []string {
+func mensajesFechasRequeridas(values map[string]string, cfg ruleRuntimeConfig, productCode string) []string {
 	var out []string
+	code := strings.ToUpper(strings.TrimSpace(productCode))
 	for _, field := range cfg.RequiredValidDateFields {
 		f := strings.TrimSpace(field)
 		if f == "" {
 			continue
+		}
+		// Bolívar: adjudicación/vencimiento se validan en bolivarValidarFechasCreditoInclusion (un solo mensaje con valor raw).
+		if strings.HasPrefix(code, "BOLIVAR") {
+			switch f {
+			case "activation_date", "loan_award_date", "loan_due_date_current":
+				continue
+			}
 		}
 		etiqueta := etiquetaCampoCanónico(f)
 		raw := strings.TrimSpace(values[f])
@@ -218,7 +226,7 @@ func mensajesFechasRequeridas(values map[string]string, cfg ruleRuntimeConfig) [
 			out = append(out, fmt.Sprintf("FALTA %s", strings.ToUpper(etiqueta)))
 			continue
 		}
-		if !dateParsedWithOrder(raw, cfg.DateLayouts, dateOrderDMY) && !dateParsedWithOrder(raw, cfg.DateLayouts, dateOrderMDY) {
+		if !fechaCampoParseable(f, raw, cfg.DateLayouts) {
 			out = append(out, mensajeFechaNoValida(etiqueta, raw))
 		}
 	}
@@ -226,8 +234,21 @@ func mensajesFechasRequeridas(values map[string]string, cfg ruleRuntimeConfig) [
 }
 
 func mensajeFechaNoValida(etiqueta, raw string) string {
-	_ = raw
-	return fmt.Sprintf("FECHA NO VÁLIDA: %s", strings.ToUpper(etiqueta))
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return fmt.Sprintf("FECHA NO VÁLIDA: %s", strings.ToUpper(etiqueta))
+	}
+	return fmt.Sprintf("FECHA NO VÁLIDA: %s (%s)", raw, strings.ToUpper(etiqueta))
+}
+
+func fechaCampoParseable(field, raw string, layouts []string) bool {
+	ctx := dateYearContextBirth
+	switch strings.TrimSpace(field) {
+	case "activation_date", "coverage_start_date", "coverage_end_date",
+		"loan_award_date", "loan_due_date_current":
+		ctx = dateYearContextVigencia
+	}
+	return !parseDateField(raw, layouts, ctx).IsZero()
 }
 
 func mensajeFechaNacimientoObligatoriaParaEdad() string {
@@ -253,13 +274,10 @@ func mensajeEdadNoCalculable(birthRaw string) string {
 	return fmt.Sprintf("FECHA NACIMIENTO NO VÁLIDA: %s", strings.TrimSpace(birthRaw))
 }
 
-// fechaInterpretadaParaMensaje devuelve la fecha si al menos un orden (DMY o MDY) parsea.
+// fechaInterpretadaParaMensaje devuelve la fecha con deducción automática de orden.
 func fechaInterpretadaParaMensaje(raw string) time.Time {
 	layouts := defaultDateLayouts()
-	if t := parseDateWithLayoutsOrder(raw, layouts, dateOrderMDY); !t.IsZero() {
-		return t
-	}
-	return parseDateWithLayoutsOrder(raw, layouts, dateOrderDMY)
+	return parseDateField(raw, layouts, dateYearContextBirth)
 }
 
 func formatAgeMaxYears(ageMax float64) string {
@@ -305,15 +323,66 @@ func mensajeBolivarVencimientoMesAnteriorAlCargue(
 	cargueMonth time.Month,
 	prima float64,
 ) string {
-	_ = values
-	_ = due
-	if prima == 0 {
-		return "VENCIMIENTO: ANTERIOR AL MES DE CARGUE (PRIMA CERO)"
+	vencRaw := strings.TrimSpace(values["loan_due_date_current"])
+	mesCargue := mesAnioRef(cargueYear, cargueMonth)
+	mesNombre := nombreMesES(cargueMonth)
+	archivo := strings.TrimSpace(values["_file_name"])
+
+	origenMesCargue := fmt.Sprintf("mes de cargue %s/%d", mesNombre, cargueYear)
+	if archivo != "" {
+		origenMesCargue = fmt.Sprintf("mes de cargue %s/%d del archivo «%s»", mesNombre, cargueYear, archivo)
 	}
-	return fmt.Sprintf(
-		"FECHA NO SE ADMITE: ANTERIOR AL MES DE CARGUE (%s)",
-		mesAnioRef(cargueYear, cargueMonth),
+
+	msg := fmt.Sprintf(
+		"VENCIMIENTO (E.10): FECHA VENCIMIENTO ACTUAL %s es anterior a %s; debe ser %s o posterior (informe, no bloquea carga)",
+		detalleFechaArchivoInterpretada(vencRaw, due),
+		origenMesCargue,
+		mesCargue,
 	)
+	if prima == 0 {
+		msg += "; además PRIMA MENSUAL = 0 (póliza congelada)"
+	}
+	return msg
+}
+
+// detalleFechaArchivoInterpretada muestra la fecha tal como viene en el archivo (sin convertir formato).
+func detalleFechaArchivoInterpretada(raw string, _ time.Time) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "(vacía)"
+	}
+	return raw
+}
+
+func nombreMesES(m time.Month) string {
+	switch m {
+	case time.January:
+		return "ENERO"
+	case time.February:
+		return "FEBRERO"
+	case time.March:
+		return "MARZO"
+	case time.April:
+		return "ABRIL"
+	case time.May:
+		return "MAYO"
+	case time.June:
+		return "JUNIO"
+	case time.July:
+		return "JULIO"
+	case time.August:
+		return "AGOSTO"
+	case time.September:
+		return "SEPTIEMBRE"
+	case time.October:
+		return "OCTUBRE"
+	case time.November:
+		return "NOVIEMBRE"
+	case time.December:
+		return "DICIEMBRE"
+	default:
+		return strings.ToUpper(m.String())
+	}
 }
 
 // mensajeBolivarRevisarPrimaVencimientoInferior conserva el nombre histórico en tests/docs.
@@ -341,14 +410,22 @@ func mensajeFechaBolivarAmbiguaMDY(campo, raw string, dmy, mdy time.Time) string
 	)
 }
 
-func mensajeFechaBolivarInvalida(values map[string]string, canon string) string {
-	_ = values
-	return fmt.Sprintf("FECHA NO VÁLIDA: %s", etiquetaCortaCampo(canon))
+func mensajeFechaBolivarInvalida(raw, canon string) string {
+	raw = strings.TrimSpace(raw)
+	campo := etiquetaCortaCampo(canon)
+	if raw == "" {
+		return fmt.Sprintf("FECHA NO VÁLIDA: %s", campo)
+	}
+	return fmt.Sprintf("FECHA NO VÁLIDA: %s (%s)", raw, campo)
 }
 
-func mensajeFechaBolivarNoInterpretable(values map[string]string, canon string) string {
-	_ = values
-	return fmt.Sprintf("FECHA AMBIGUA: %s", etiquetaCortaCampo(canon))
+func mensajeFechaBolivarNoInterpretable(raw, canon string) string {
+	raw = strings.TrimSpace(raw)
+	campo := etiquetaCortaCampo(canon)
+	if raw == "" {
+		return fmt.Sprintf("FECHA AMBIGUA: %s", campo)
+	}
+	return fmt.Sprintf("FECHA AMBIGUA: %s (%s)", raw, campo)
 }
 
 func mensajeVencimientoMenorAdjudicacion(values map[string]string, adj, due time.Time) string {
@@ -431,8 +508,16 @@ func mensajePrimaNoPermitida(code, valorRaw string, permitidos []float64) string
 	return fmt.Sprintf("REVISAR PRIMA: VALOR %s NO PERMITIDO", valorRaw)
 }
 
-func mensajeInicioVigenciaFueraMesTrabajo(valorRaw string) string {
-	return fmt.Sprintf("FECHA INICIO: FUERA DEL MES DE TRABAJO (%s)", valorRaw)
+// mensajeInicioVigenciaFueraMesTrabajo: el archivo debe traer INICIO VIGENCIA del mes inmediatamente
+// anterior al mes en que se carga (regla operativa). Solo se compara el mes; el día puede ser cualquiera.
+func mensajeInicioVigenciaFueraMesTrabajo(valorRaw string, mesProceso time.Time) string {
+	expectedYear, expectedMonth := mesAnteriorAlCargue(mesProceso.UTC())
+	return fmt.Sprintf(
+		"INICIO VIGENCIA FUERA DEL MES ESPERADO (%s; DEBE SER CUALQUIER DÍA DE %02d/%d)",
+		strings.TrimSpace(valorRaw),
+		int(expectedMonth),
+		expectedYear,
+	)
 }
 
 func mensajeFinVigenciaIncoherentePlazo(inicioRaw, plazoRaw, finRaw string, diffDays, tolerancia int, layouts []string) string {
@@ -448,36 +533,25 @@ func mensajeFinVigenciaIncoherentePlazo(inicioRaw, plazoRaw, finRaw string, diff
 	return fmt.Sprintf("REVISAR FIN VIGENCIA: DIFERENCIA %d DÍAS", absDiff)
 }
 
-// detalleVigenciaPlazoInterpretada explica cómo se leyeron inicio y fin (mes/día/año en vigencias).
+// detalleVigenciaPlazoInterpretada explica la lectura día/mes/año de inicio y fin.
 func detalleVigenciaPlazoInterpretada(inicioRaw, plazoRaw, finRaw string, layouts []string) string {
 	term, _ := parseFlexibleNumber(plazoRaw)
 	if term <= 0 {
 		return ""
 	}
-	var b strings.Builder
-	for _, orden := range []struct {
-		label string
-		order dateFieldOrder
-	}{
-		{"día/mes/año", dateOrderDMY},
-		{"mes/día/año", dateOrderMDY},
-	} {
-		start := parseVigenciaDateWithLayoutsOrder(inicioRaw, layouts, orden.order)
-		end := parseVigenciaDateWithLayoutsOrder(finRaw, layouts, orden.order)
-		if start.IsZero() || end.IsZero() {
-			continue
-		}
-		expected := start.AddDate(0, int(term), 0)
-		diff := int(end.Sub(expected).Hours() / 24)
-		fmt.Fprintf(&b, "Con %s: inicio %s, fin %s, fin esperado %s (diferencia %d días).",
-			orden.label,
-			formatFechaCalendario(start),
-			formatFechaCalendario(end),
-			formatFechaCalendario(expected),
-			diff,
-		)
+	start := parseDateField(inicioRaw, layouts, dateYearContextVigencia)
+	end := parseDateField(finRaw, layouts, dateYearContextVigencia)
+	if start.IsZero() || end.IsZero() {
+		return ""
 	}
-	return strings.TrimSpace(b.String())
+	expected := start.AddDate(0, int(term), 0)
+	diff := int(end.Sub(expected).Hours() / 24)
+	return fmt.Sprintf(
+		"Inicio %s, fin %s (diferencia %d días).",
+		strings.TrimSpace(inicioRaw),
+		strings.TrimSpace(finRaw),
+		diff,
+	)
 }
 
 func mensajeFlujoCancelacionesMapfre() string {
@@ -500,11 +574,11 @@ func mensajeCancelacionFechasNoValidas(finRaw, activRaw string) string {
 	)
 }
 
-func mensajeCancelacionFinActivMismoDia(fin, activ time.Time) string {
+func mensajeCancelacionFinActivMismoDia(finRaw, activRaw string) string {
 	return fmt.Sprintf(
 		"CANCELACIÓN: FIN DE VIGENCIA DEBE COINCIDIR EN DÍA CON ACTIVACIÓN (FIN=%s, ACTIVACIÓN=%s)",
-		formatFechaCalendario(fin),
-		formatFechaCalendario(activ),
+		strings.TrimSpace(finRaw),
+		strings.TrimSpace(activRaw),
 	)
 }
 
@@ -512,10 +586,10 @@ func mensajeCancelacionMesEtiquetaIndeterminado() string {
 	return "CANCELACIÓN: NO SE PUDO DETERMINAR MES DE ETIQUETADO (OBS O NOMBRE DE ARCHIVO)"
 }
 
-func mensajeCancelacionFinFueraMesEtiqueta(fin time.Time, labelYear int, labelMonth time.Month) string {
+func mensajeCancelacionFinFueraMesEtiqueta(finRaw string, labelYear int, labelMonth time.Month) string {
 	return fmt.Sprintf(
 		"CANCELACIÓN: FIN DE VIGENCIA FUERA DEL MES ETIQUETADO (FIN=%s, ETIQUETA=%02d/%d)",
-		formatFechaCalendario(fin),
+		strings.TrimSpace(finRaw),
 		int(labelMonth),
 		labelYear,
 	)

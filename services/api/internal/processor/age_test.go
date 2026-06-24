@@ -17,15 +17,15 @@ func TestCompletedYearsBetween(t *testing.T) {
 	}
 }
 
-func TestEdadCumpleRango_DMYThenMDY(t *testing.T) {
+func TestEdadCumpleRango_Inferido(t *testing.T) {
 	layouts := defaultDateLayouts()
-	ref := time.Date(2025, 5, 20, 0, 0, 0, 0, time.UTC)
-	// Ambiguo: DMY 17, MDY 18 → acepta si MDY cumple mínimo.
-	if ok, _ := edadCumpleRango("01/06/2007", layouts, ref, 18, 75.997); !ok {
-		t.Fatal("debe aceptar cuando al menos una interpretación cumple")
+	ref := time.Date(2025, 6, 16, 0, 0, 0, 0, time.UTC)
+	if ok, _ := edadCumpleRango("15/06/2007", layouts, ref, 18, 75.997); !ok {
+		t.Fatal("debe aceptar cuando cumple mínimo")
 	}
-	if ok, edad := edadCumpleRango("01/06/2007", layouts, ref, 19, 75); ok || edad != 18 {
-		t.Fatalf("fuera de rango mínimo: ok=%v edad=%d (MDY da 18)", ok, edad)
+	refMenor := time.Date(2025, 5, 20, 0, 0, 0, 0, time.UTC)
+	if ok, edad := edadCumpleRango("15/06/2007", layouts, refMenor, 18, 75); ok || edad != 17 {
+		t.Fatalf("fuera de rango mínimo: ok=%v edad=%d", ok, edad)
 	}
 	refOld := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 	if ok, _ := edadCumpleRango("01/01/2010", layouts, refOld, 18, 75); ok {
@@ -55,7 +55,7 @@ func TestEdad18Inclusive(t *testing.T) {
 func TestEdadMax75Anos364Dias(t *testing.T) {
 	layouts := defaultDateLayouts()
 	// Nació 1-jun-1950 → cumpleaños 76 el 1-jun-2026; negocio: válido hasta 31-may-2026 (día anterior).
-	birthRaw := "01/06/1950"
+	birthRaw := "01-06-1950"
 	dias := 1
 	refOK := time.Date(2026, 5, 31, 0, 0, 0, 0, time.UTC)
 	if ok, age := edadCumpleRangoEstricto(birthRaw, layouts, refOK, 18, 75.997, dias, false); !ok {
@@ -73,18 +73,19 @@ func TestEdadMax75Anos364Dias(t *testing.T) {
 
 func TestEdadUnDiaAntesCumpleanos76_Jun1950(t *testing.T) {
 	layouts := defaultDateLayouts()
-	birthRaw := "06-19-50"
+	birthRaw := "19-06-50"
 	ref := time.Date(2026, 6, 18, 0, 0, 0, 0, time.UTC) // 1 día antes del 76 (19-jun-2026)
-	if ok, age := edadCumpleRangoEstricto(birthRaw, layouts, ref, 18, 75.997, 1, true); !ok || age != 75 {
+	if ok, age := edadCumpleRangoEstricto(birthRaw, layouts, ref, 18, 75.997, 1, false); !ok || age != 75 {
 		t.Fatalf("activación 18-jun-2026 debe ser válida (75 cumplidos): ok=%v edad=%d", ok, age)
 	}
 }
 
-func TestEdadMapfreInicioVigenciaMDY(t *testing.T) {
+func TestEdadMapfreInicioVigenciaInferred(t *testing.T) {
 	layouts := defaultDateLayouts()
+	// Día/mes/año: nacimiento 14-ago-1976, activación 19-nov-2021.
 	values := map[string]string{
-		"birth_date":          "06-19-50",
-		"coverage_start_date": "04-08-26",
+		"birth_date":          "14-08-76",
+		"coverage_start_date": "19-11-21",
 	}
 	cfg := ruleRuntimeConfig{
 		HasAgeLimits:            true,
@@ -97,14 +98,11 @@ func TestEdadMapfreInicioVigenciaMDY(t *testing.T) {
 	if !det.refValid {
 		t.Fatal("fecha de activación debe parsear")
 	}
-	if det.ref.Year() != 2026 || det.ref.Month() != time.April || det.ref.Day() != 8 {
-		t.Fatalf("activación debe ser 2026-04-08 (MDY), got %s", FormatDateCanonical(det.ref))
+	if det.ref.Year() != 2021 || det.ref.Month() != time.November || det.ref.Day() != 19 {
+		t.Fatalf("activación debe ser 2021-11-19, got %s", FormatDateCanonical(det.ref))
 	}
 	if !det.cumple {
-		t.Fatalf("debe cumplir a 8-abr-2026 (75 años en activación, cumple 76 el 19-jun): edad=%d", det.edadReportada)
-	}
-	if det.edadReportada != 75 {
-		t.Fatalf("edad reportada %d, want 75", det.edadReportada)
+		t.Fatalf("debe cumplir edad en activación: edad=%d", det.edadReportada)
 	}
 }
 

@@ -29,7 +29,7 @@ import (
 
 type Service struct {
 	store      *store.Store
-	notifier   notify.ErrorNotifier
+	notifier   notify.FileNotifier
 	jobs       chan queuedJob
 	once       sync.Once
 	workers    int
@@ -78,7 +78,7 @@ func New(st *store.Store) *Service {
 	workers := processorWorkersFromEnv()
 	s := &Service{
 		store:    st,
-		notifier: notify.NewErrorNotifierFromEnv(),
+		notifier: notify.NewFileNotifierFromEnv(),
 		jobs:     make(chan queuedJob, 256),
 		workers:  workers,
 		progress: make(map[string]ProgressInfo),
@@ -107,22 +107,7 @@ func (s *Service) startWorker() {
 					})
 					rec := s.processByName(job)
 					s.store.AddFileRecord(rec)
-					if rec.Status == model.FileStatusError {
-						err := s.notifier.NotifyFileProcessingError(notify.ErrorEmailInput{
-							FileID:      rec.ID,
-							FileName:    rec.FileName,
-							ProductID:   rec.ProductID,
-							Status:      string(rec.Status),
-							ErrorReason: rec.ErrorReason,
-							ValidationReportJSON: rec.ValidationReportJSON,
-							ProcessedAt: rec.ProcessedAt,
-						})
-						if err != nil {
-							log.Printf("[notify] fallo envio correo (revisar adjunto/SendGrid) file_id=%s err=%v", rec.ID, err)
-						} else {
-							log.Printf("[notify] correo de error enviado con adjunto file_id=%s", rec.ID)
-						}
-					}
+					s.notifyFileProcessing(rec)
 					finalErr := rec.ErrorReason
 					s.updateProgress(job.ID, job.FileName, string(rec.Status), 100, "finalizado", rec.ProductID, finalErr)
 					log.Printf("[processor] worker_%d finalizó file_id=%s status=%s", id, job.ID, rec.Status)
@@ -130,6 +115,34 @@ func (s *Service) startWorker() {
 			}(workerID)
 		}
 	})
+}
+
+func (s *Service) notifyFileProcessing(rec model.FileProcessRecord) {
+	if rec.Status != model.FileStatusProcessed && rec.Status != model.FileStatusError {
+		return
+	}
+	err := s.notifier.NotifyFileProcessing(notify.FileEmailInput{
+		FileID:               rec.ID,
+		FileName:             rec.FileName,
+		ProductID:            rec.ProductID,
+		Status:               string(rec.Status),
+		ErrorReason:          rec.ErrorReason,
+		ValidationReportJSON: rec.ValidationReportJSON,
+		ArchivePath:          rec.ArchivePath,
+		ProcessedAt:          rec.ProcessedAt,
+	})
+	if err != nil {
+		log.Printf("[notify] fallo envio correo file_id=%s status=%s err=%v", rec.ID, rec.Status, err)
+		if setErr := s.store.SetFileEmailError(rec.ID, err.Error()); setErr != nil {
+			log.Printf("[notify] no se pudo guardar email_error file_id=%s err=%v", rec.ID, setErr)
+		}
+		return
+	}
+	if rec.Status == model.FileStatusProcessed {
+		log.Printf("[notify] correo de éxito enviado file_id=%s", rec.ID)
+	} else {
+		log.Printf("[notify] correo de error enviado file_id=%s", rec.ID)
+	}
 }
 
 // ScanAndEnqueue lee el SFTP y encola archivos para proceso asíncrono con pool de workers.
@@ -482,6 +495,19 @@ func (s *Service) processOne(c *sftpclient.Client, job queuedJob) model.FileProc
 	}
 	s.updateProgress(job.ID, job.FileName, "PROCESSING", 85, "validaciones OK", selectedProductID, "")
 
+	rec.ValidationReportJSON = validationReportJSONFromPolicies(
+		rec.ID,
+		fileName,
+		selectedProductID,
+		string(model.FileStatusProcessed),
+		rec.ErrorReason,
+		rec.ProcessedAt,
+		policies,
+	)
+	if rec.ValidationReportJSON != "" {
+		log.Printf("[processor] informe_novedades generado file_id=%s (carga OK con avisos/informes)", rec.ID)
+	}
+
 	rec.Status = model.FileStatusProcessed
 	rec.ProcessedPath = moveRemoteFile(c, fileName, "PROCESSED")
 	if rec.ProcessedPath == "" {
@@ -494,6 +520,32 @@ func (s *Service) processOne(c *sftpclient.Client, job queuedJob) model.FileProc
 	}
 	log.Printf("[processor] terminado OK file_id=%s file=%s dst=%s", rec.ID, rec.FileName, rec.ProcessedPath)
 	return rec
+}
+
+// validationReportJSONFromPolicies persiste el informe cuando hay novedades (informes o incidencias).
+func validationReportJSONFromPolicies(
+	fileID, fileName, productID, fileStatus, errorReason string,
+	processedAt time.Time,
+	policies []model.PolicyRecord,
+) string {
+	report := store.BuildFileValidationReportFromPolicies(
+		fileID,
+		fileName,
+		productID,
+		fileStatus,
+		errorReason,
+		processedAt.UTC().Format(time.RFC3339Nano),
+		policies,
+	)
+	if report.TotalInformativeValidations == 0 && report.TotalPendingValidations == 0 {
+		return ""
+	}
+	b, err := json.Marshal(report)
+	if err != nil {
+		log.Printf("[processor] no se pudo serializar informe de novedades file_id=%s err=%v", fileID, err)
+		return ""
+	}
+	return string(b)
 }
 
 func validateFile(r io.Reader, fileID, fileName string, candidates []model.Product, svc *Service) ([]model.PolicyRecord, string, string, string, error) {
@@ -559,7 +611,7 @@ func validateFile(r io.Reader, fileID, fileName string, candidates []model.Produ
 	policies := make([]model.PolicyRecord, 0)
 	seenCredits := map[string]struct{}{}
 	ruleCfg := svc.buildRuleRuntimeConfig(p)
-	hasFreezeOnZeroPolicy := hasRuleType(p.Rules, "freeze_on_zero_premium")
+	hasFreezeOnZeroPolicy := productFreezesOnZeroPremium(p.Code, p.Rules)
 	inFileCreditCounts := make(map[string]int)
 	inFileDuplicateCreditKeys := 0
 	inFileDuplicateRows := 0
@@ -651,6 +703,11 @@ func validateFile(r io.Reader, fileID, fileName string, candidates []model.Produ
 		values["_file_name"] = fileName
 		values["product_id"] = p.ID
 		frozen, ruleViolations := runRules(values, p.Rules)
+		if !frozen && productFreezesOnZeroPremium(p.Code, p.Rules) {
+			if prem, _ := parseFlexibleNumber(values["monthly_premium"]); prem == 0 {
+				frozen = true
+			}
+		}
 		status := "ACTIVE"
 		notes := make([]string, 0)
 		for _, rv := range ruleViolations {
@@ -865,6 +922,15 @@ func countMappedHeaders(header []string, mappings []model.FieldMap) int {
 	return n
 }
 
+// productFreezesOnZeroPremium: Bolívar siempre congela prima 0 (aunque rules_json en BD esté desactualizado).
+func productFreezesOnZeroPremium(productCode string, rules []model.RuleConfig) bool {
+	if hasRuleType(rules, "freeze_on_zero_premium") {
+		return true
+	}
+	code := strings.ToUpper(strings.TrimSpace(productCode))
+	return strings.HasPrefix(code, "BOLIVAR")
+}
+
 func hasRuleType(rules []model.RuleConfig, ruleType string) bool {
 	target := strings.ToLower(strings.TrimSpace(ruleType))
 	if target == "" {
@@ -988,7 +1054,9 @@ func readWorkbookRows(tmpPath, sheetName string) ([][]string, error) {
 }
 
 func readRowsWithExcelize(tmpPath, sheetName string) ([][]string, error) {
-	f, err := excelize.OpenFile(tmpPath)
+	// ShortDatePattern fuerza a excelize a formatear las celdas de fecha (numFmtID 14, etc.) como
+	// día/mes/año, evitando que las reescriba con el default US (mm-dd-yy) y altere los datos.
+	f, err := excelize.OpenFile(tmpPath, excelize.Options{ShortDatePattern: "dd/mm/yyyy"})
 	if err != nil {
 		return nil, err
 	}
@@ -998,18 +1066,13 @@ func readRowsWithExcelize(tmpPath, sheetName string) ([][]string, error) {
 	if len(sheets) == 0 {
 		return nil, fmt.Errorf("sin hojas en workbook")
 	}
+	// Requisito operativo: siempre la primera hoja del libro (inclusiones Bolívar/MAPFRE).
 	sheet := sheets[0]
-	want := strings.TrimSpace(sheetName)
-	if want != "" {
-		for _, s := range sheets {
-			if strings.EqualFold(strings.TrimSpace(s), want) {
-				sheet = s
-				break
-			}
-		}
+	if want := strings.TrimSpace(sheetName); want != "" && !strings.EqualFold(want, sheet) {
+		log.Printf("[processor] ignorando sheet_name=%q; se usa la primera hoja %q", want, sheet)
 	}
 
-	rows, err := f.GetRows(sheet)
+	rows, err := f.GetRows(sheet, excelize.Options{ShortDatePattern: "dd/mm/yyyy", RawCellValue: false})
 	if err != nil {
 		return nil, fmt.Errorf("read rows %s: %w", sheet, err)
 	}
@@ -1211,7 +1274,7 @@ func applyDiagramRules(
 		return hardViolations, softNotes
 	}
 
-	hardViolations = append(hardViolations, mensajesFechasRequeridas(values, cfg)...)
+	hardViolations = append(hardViolations, mensajesFechasRequeridas(values, cfg, code)...)
 
 	if cfg.HasAgeLimits {
 		mapfreSheet := strings.HasPrefix(code, "MAPFRE")
@@ -1237,7 +1300,8 @@ func applyDiagramRules(
 			))
 		} else {
 			seenCredits[key] = struct{}{}
-			if svc.store.PolicyCreditExists(values["product_id"], credit) || svc.store.PolicyCreditExists(codeToProductID(code), credit) {
+			if svc != nil && svc.store != nil &&
+				(svc.store.PolicyCreditExists(values["product_id"], credit) || svc.store.PolicyCreditExists(codeToProductID(code), credit)) {
 				hardViolations = append(hardViolations, mensajeCreditoDuplicadoHistorico())
 			}
 		}
@@ -1256,7 +1320,7 @@ func applyDiagramRules(
 		hardViolations = append(hardViolations, validarPlanMapfre(code, values)...)
 
 		if cfg.MapfreRequireCurrentMonth && !mapfreInicioVigenciaEnMesTrabajo(values["coverage_start_date"], cfg.DateLayouts) {
-			hardViolations = append(hardViolations, mensajeInicioVigenciaFueraMesTrabajo(values["coverage_start_date"]))
+			hardViolations = append(hardViolations, mensajeInicioVigenciaFueraMesTrabajo(values["coverage_start_date"], time.Now().UTC()))
 		}
 		if diffDays, coherente := mapfreFinVigenciaPlazoCoherente(
 			values["coverage_start_date"],
@@ -1337,25 +1401,13 @@ func fechaNacimientoParseableBolivar(raw string, layouts []string) bool {
 	return len(bolivarBirthDateLecturas(raw, layouts)) > 0
 }
 
-// bolivarBirthDateLecturas reúne lecturas distintas de nacimiento (DMY, MDY y día>12).
+// bolivarBirthDateLecturas: única lectura de nacimiento como día/mes/año.
 func bolivarBirthDateLecturas(raw string, layouts []string) []time.Time {
-	out := make([]time.Time, 0, 3)
-	add := func(t time.Time) {
-		if t.IsZero() {
-			return
-		}
-		for _, x := range out {
-			if sameCalendarDay(x, t) {
-				return
-			}
-		}
-		out = append(out, t)
+	t := parseDateField(raw, layouts, dateYearContextBirth)
+	if t.IsZero() {
+		return nil
 	}
-	dmy, mdy := parseBirthDateOrders(raw, layouts, false)
-	add(dmy)
-	add(mdy)
-	add(parseBirthDateDMYDayGreaterThan12(raw))
-	return out
+	return []time.Time{t}
 }
 
 // edadCumpleRangoBolivarDual: si alguna lectura de nacimiento cumple el rango, la póliza es válida (sin novedad de edad).
@@ -1398,49 +1450,47 @@ func edadCumpleRangoBolivarDual(
 	return false, edadPeor
 }
 
-// mapfreInicioVigenciaEnMesTrabajo valida vigencia (independiente de la regla de edad).
+// mapfreInicioVigenciaEnMesTrabajo: el archivo cargado en mes N debe traer INICIO VIGENCIA del mes N-1
+// (regla operativa: las inclusiones de mayo se cargan en junio, las de junio en julio, etc.).
+// Solo se compara el mes/año; el día puede ser cualquiera dentro del mes esperado.
 func mapfreInicioVigenciaEnMesTrabajo(startRaw string, layouts []string) bool {
-	now := time.Now().UTC()
-	for _, order := range []dateFieldOrder{dateOrderMDY, dateOrderDMY} {
-		start := parseVigenciaDateWithLayoutsOrder(startRaw, layouts, order)
-		if start.IsZero() {
-			continue
-		}
-		if start.Year() == now.Year() && start.Month() == now.Month() {
-			return true
-		}
+	start := parseDateField(startRaw, layouts, dateYearContextVigencia)
+	if start.IsZero() {
+		return false
 	}
-	return false
+	expectedYear, expectedMonth := mesAnteriorAlCargue(time.Now().UTC())
+	return start.Year() == expectedYear && start.Month() == expectedMonth
+}
+
+// mesAnteriorAlCargue devuelve año/mes del mes inmediatamente anterior al mes de cargue (rollover de año en enero).
+func mesAnteriorAlCargue(now time.Time) (int, time.Month) {
+	prev := now.AddDate(0, -1, 0)
+	return prev.Year(), prev.Month()
 }
 
 // mapfreFinVigenciaPlazoCoherente valida inicio+plazo vs fin de vigencia (no calcula edad).
+// Si no hay plazo o las fechas no se interpretan (diff 0), se omite la regla: la fila sigue
+// como válida (p. ej. fin de vigencia ajustado por cancelación en otro archivo/momento).
 func mapfreFinVigenciaPlazoCoherente(startRaw, termRaw, endRaw string, layouts []string, tolerance int) (diffDays int, ok bool) {
 	term, _ := parseFlexibleNumber(termRaw)
 	if term <= 0 {
-		return 0, false
+		return 0, true
 	}
 	bestDiff := 0
 	hadPair := false
-	firstDiff := true
-	for _, order := range []dateFieldOrder{dateOrderMDY, dateOrderDMY} {
-		start := parseVigenciaDateWithLayoutsOrder(startRaw, layouts, order)
-		end := parseVigenciaDateWithLayoutsOrder(endRaw, layouts, order)
-		if start.IsZero() || end.IsZero() {
-			continue
-		}
+	start := parseDateField(startRaw, layouts, dateYearContextVigencia)
+	end := parseDateField(endRaw, layouts, dateYearContextVigencia)
+	if !start.IsZero() && !end.IsZero() {
 		hadPair = true
 		expected := start.AddDate(0, int(term), 0)
 		diff := int(end.Sub(expected).Hours() / 24)
 		if diff >= -tolerance && diff <= tolerance {
 			return diff, true
 		}
-		if firstDiff || absInt(diff) > absInt(bestDiff) {
-			bestDiff = diff
-			firstDiff = false
-		}
+		bestDiff = diff
 	}
 	if !hadPair {
-		return 0, false
+		return 0, true
 	}
 	return bestDiff, false
 }
@@ -1590,12 +1640,6 @@ type edadValidacionDetalle struct {
 	ref             time.Time
 	refEtiqueta     string
 	refValorArchivo string
-	nacimientoDMY     time.Time
-	nacimientoMDY     time.Time
-	edadDMY           int
-	edadMDY           int
-	fechaLimiteMaxDMY time.Time
-	fechaLimiteMaxMDY time.Time
 }
 
 func evaluarEdadDetalle(values map[string]string, cfg ruleRuntimeConfig, mapfreSheet bool, productCode string) edadValidacionDetalle {
@@ -1604,131 +1648,76 @@ func evaluarEdadDetalle(values map[string]string, cfg ruleRuntimeConfig, mapfreS
 	layouts := cfg.DateLayouts
 	ref, refOK := ageReferenceAtActivation(values, layouts, mapfreSheet, productCode)
 	d := edadValidacionDetalle{
-		birthRaw:      birthRaw,
-		activacionRaw: activacionRaw,
-		refValid:      refOK,
-		ref:           ref,
-		refEtiqueta:   "fecha de activación",
+		birthRaw:        birthRaw,
+		activacionRaw:   activacionRaw,
+		refValid:        refOK,
+		ref:             ref,
+		refEtiqueta:     "fecha de activación",
 		refValorArchivo: activacionRaw,
 	}
 	diasAntesEdad := ageDaysBeforeTopBirthday(cfg.AgeMaxDaysBeforeBirthday)
 	if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(productCode)), "BOLIVAR") {
-		d.nacimientoDMY, d.nacimientoMDY = parseBirthDateOrders(birthRaw, layouts, false)
-		d.edadDMY = completedYearsBetween(d.nacimientoDMY, ref)
-		d.edadMDY = completedYearsBetween(d.nacimientoMDY, ref)
 		d.cumple, d.edadReportada = edadCumpleRangoBolivarDual(birthRaw, layouts, ref, cfg.AgeMin, cfg.AgeMax, diasAntesEdad)
-	} else {
-		d.nacimientoDMY, d.nacimientoMDY = parseBirthDateOrders(birthRaw, layouts, mapfreSheet)
-		d.edadDMY = completedYearsBetween(d.nacimientoDMY, ref)
-		d.edadMDY = completedYearsBetween(d.nacimientoMDY, ref)
-		d.cumple, d.edadReportada = edadCumpleRangoEstricto(birthRaw, layouts, ref, cfg.AgeMin, cfg.AgeMax, diasAntesEdad, mapfreSheet)
-		d.fechaLimiteMaxDMY = fechaLimiteMaxEdad(d.nacimientoDMY, cfg.AgeMax, diasAntesEdad)
-		d.fechaLimiteMaxMDY = fechaLimiteMaxEdad(d.nacimientoMDY, cfg.AgeMax, diasAntesEdad)
 		return d
 	}
-	d.fechaLimiteMaxDMY = fechaLimiteMaxEdad(d.nacimientoDMY, cfg.AgeMax, diasAntesEdad)
-	d.fechaLimiteMaxMDY = fechaLimiteMaxEdad(d.nacimientoMDY, cfg.AgeMax, diasAntesEdad)
+	d.cumple, d.edadReportada = edadCumpleRangoEstricto(birthRaw, layouts, ref, cfg.AgeMin, cfg.AgeMax, diasAntesEdad, mapfreSheet)
 	return d
 }
 
-// bolivarViolacionesEdad: si alguna lectura DMY/MDY cumple, no se agrega novedad de edad (póliza válida).
+// bolivarViolacionesEdad: edad fuera de rango; fechas inválidas las reportan otras reglas (sin duplicar).
 func bolivarViolacionesEdad(values map[string]string, cfg ruleRuntimeConfig, det edadValidacionDetalle) []string {
-	var out []string
 	switch {
 	case strings.TrimSpace(det.birthRaw) == "":
-		out = append(out, mensajeFechaNacimientoObligatoriaParaEdad())
+		return nil
 	case det.activacionRaw == "":
-		out = append(out, mensajeFechaActivacionObligatoriaBolivar())
-	case !det.refValid:
-		out = append(out, mensajeFechaActivacionNoCalculable(det.activacionRaw, cfg.DateLayouts, false, "BOLIVAR"))
-	case !fechaNacimientoParseableBolivar(det.birthRaw, cfg.DateLayouts):
-		out = append(out, mensajeEdadNoCalculable(det.birthRaw))
+		return []string{mensajeFechaActivacionObligatoriaBolivar()}
+	case !det.refValid, !fechaNacimientoParseableBolivar(det.birthRaw, cfg.DateLayouts):
+		return nil
 	case !det.cumple && bolivarAplicaIncidenciaEdadFueraRango(values, cfg):
-		out = append(out, mensajeEdadFueraDeRango("BOLIVAR", det, cfg.AgeMin, cfg.AgeMax, ageDaysBeforeTopBirthday(cfg.AgeMaxDaysBeforeBirthday)))
+		return []string{mensajeEdadFueraDeRango("BOLIVAR", det, cfg.AgeMin, cfg.AgeMax, ageDaysBeforeTopBirthday(cfg.AgeMaxDaysBeforeBirthday))}
 	}
-	return out
+	return nil
 }
 
 func violacionesEdadGenerico(code string, cfg ruleRuntimeConfig, det edadValidacionDetalle, mapfreSheet bool) []string {
-	var out []string
 	switch {
 	case strings.TrimSpace(det.birthRaw) == "":
-		out = append(out, mensajeFechaNacimientoObligatoriaParaEdad())
+		return nil
 	case det.activacionRaw == "":
-		out = append(out, mensajeFechaActivacionObligatoriaParaEdad())
-	case !det.refValid:
-		out = append(out, mensajeFechaActivacionNoCalculable(det.activacionRaw, cfg.DateLayouts, mapfreSheet, code))
-	case !fechaNacimientoParseable(det.birthRaw, cfg.DateLayouts, mapfreSheet):
-		out = append(out, mensajeEdadNoCalculable(det.birthRaw))
+		return nil
+	case !det.refValid, !fechaNacimientoParseable(det.birthRaw, cfg.DateLayouts, mapfreSheet):
+		return nil
 	case !det.cumple:
-		out = append(out, mensajeEdadFueraDeRango(code, det, cfg.AgeMin, cfg.AgeMax, ageDaysBeforeTopBirthday(cfg.AgeMaxDaysBeforeBirthday)))
+		return []string{mensajeEdadFueraDeRango(code, det, cfg.AgeMin, cfg.AgeMax, ageDaysBeforeTopBirthday(cfg.AgeMaxDaysBeforeBirthday))}
 	}
-	return out
+	return nil
 }
 
 func formatFechaCalendario(t time.Time) string {
 	return FormatDateCanonical(t)
 }
 
-// edadCumpleRangoEstricto valida el rango solo a partir de la fecha de nacimiento y la fecha de referencia.
-// mapfreSheet: nacimiento en Excel MAPFRE suele ser mes/día/año (p. ej. 06-19-50).
+// edadCumpleRangoEstricto valida el rango con nacimiento y referencia en día/mes/año.
 func edadCumpleRangoEstricto(birthRaw string, layouts []string, ref time.Time, ageMin, ageMax float64, diasAntesMax int, mapfreSheet bool) (cumple bool, edadReportada int) {
+	_ = mapfreSheet
 	minYears := ageLimitMinInt(ageMin)
 	maxBirthdayYear := ageLimitMaxBirthdayYear(ageMax)
-	birthDMY, birthMDY := parseBirthDateOrders(birthRaw, layouts, mapfreSheet)
-	ambiguo := !birthDMY.IsZero() && !birthMDY.IsZero() && !sameCalendarDay(birthDMY, birthMDY)
-
-	birthParaTope := birthDMY
-	if mapfreSheet && !birthMDY.IsZero() {
-		birthParaTope = birthMDY
-	} else if birthParaTope.IsZero() {
-		birthParaTope = birthMDY
-	}
-	if !birthParaTope.IsZero() {
-		ageTope := completedYearsBetween(birthParaTope, ref)
-		if ageTope >= maxBirthdayYear {
-			return false, ageTope
-		}
-		maxDate := fechaLimiteMaxEdad(birthParaTope, ageMax, diasAntesMax)
-		if !maxDate.IsZero() && ref.After(maxDate) {
-			return false, ageTope
-		}
-	}
-	if !ambiguo && !birthMDY.IsZero() && birthMDY != birthParaTope {
-		ageMDY := completedYearsBetween(birthMDY, ref)
-		if ageMDY >= maxBirthdayYear {
-			return false, ageMDY
-		}
-		maxMDY := fechaLimiteMaxEdad(birthMDY, ageMax, diasAntesMax)
-		if !maxMDY.IsZero() && ref.After(maxMDY) {
-			return false, ageMDY
-		}
-	}
-
-	type parsed struct {
-		birth time.Time
-		age   int
-	}
-	var lecturas []parsed
-	for _, b := range []time.Time{birthDMY, birthMDY} {
-		if b.IsZero() {
-			continue
-		}
-		lecturas = append(lecturas, parsed{birth: b, age: completedYearsBetween(b, ref)})
-	}
-	if len(lecturas) == 0 {
+	birth := parseBirthDate(birthRaw, layouts, false)
+	if birth.IsZero() {
 		return false, -1
 	}
-	edadPeor := lecturas[0].age
-	for _, p := range lecturas {
-		if p.age > edadPeor {
-			edadPeor = p.age
-		}
-		if edadEnRangoCalendario(p.birth, ref, minYears, maxBirthdayYear, diasAntesMax) {
-			return true, p.age
-		}
+	age := completedYearsBetween(birth, ref)
+	if age >= maxBirthdayYear {
+		return false, age
 	}
-	return false, edadPeor
+	maxDate := fechaLimiteMaxEdad(birth, ageMax, diasAntesMax)
+	if !maxDate.IsZero() && ref.After(maxDate) {
+		return false, age
+	}
+	if edadEnRangoCalendario(birth, ref, minYears, maxBirthdayYear, diasAntesMax) {
+		return true, age
+	}
+	return false, age
 }
 
 func sameCalendarDay(a, b time.Time) bool {
@@ -1793,13 +1782,11 @@ func ageLimitMaxInt(max float64) int {
 }
 
 func defaultDateLayouts() []string {
-	// ISO primero; el parser numérico cubre dd/mm y mm/dd con / - .
-	// Los layouts Go 01/02 vs 02/01 siguen como respaldo (sin cambiar date_layouts_csv en BD).
+	// ISO (año-mes-día) y numérico día/mes/año. No se admiten layouts mes/día/año.
 	return []string{
 		"2006-01-02", "2006/01/02",
 		"02/01/2006", "2/1/2006", "02-01-2006",
-		"01/02/2006", "1/2/2006", "01-02-2006",
-		"01-02-06", "1-2-06", "01/02/06", "1/2/06",
+		"02-01-06", "2-1-06", "02/01/06", "2/1/06",
 	}
 }
 

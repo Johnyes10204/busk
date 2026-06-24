@@ -143,7 +143,7 @@ func TestBolivarApplyDiagramRules_SinIncidenciaEdadSiUnaInterpretacionValida(t *
 	}
 	values := map[string]string{
 		"birth_date":      "01/06/2007",
-		"loan_award_date": "05-20-25",
+		"loan_award_date": "02-06-25",
 	}
 	seen := make(map[string]struct{})
 	hard, _ := applyDiagramRules("BOLIVAR_INCLUSION_DEUDORES_BANCO", values, seen, nil, 0, 0, cfg, &Service{})
@@ -154,16 +154,16 @@ func TestBolivarApplyDiagramRules_SinIncidenciaEdadSiUnaInterpretacionValida(t *
 	}
 }
 
-func TestBolivarEdad_DualInterpretacionCumpleSiUnaVale(t *testing.T) {
+func TestBolivarEdad_DMYCumpleEdadMinima(t *testing.T) {
 	layouts := defaultDateLayouts()
-	ref := time.Date(2025, 5, 20, 0, 0, 0, 0, time.UTC)
+	ref := time.Date(2025, 6, 2, 0, 0, 0, 0, time.UTC)
 	ok, edad := edadCumpleRangoBolivarDual("01/06/2007", layouts, ref, 18, 75.997, 1)
 	if !ok || edad != 18 {
-		t.Fatalf("mes/día/año da 18 cumplidos; día/mes da 17: debe pasar con MDY: ok=%v edad=%d", ok, edad)
+		t.Fatalf("día/mes/año con 18 cumplidos: ok=%v edad=%d", ok, edad)
 	}
 	values := map[string]string{
 		"birth_date":      "01/06/2007",
-		"loan_award_date": "05-20-25",
+		"loan_award_date": "02-06-25",
 	}
 	cfg := ruleRuntimeConfig{
 		DateLayouts:              defaultDateLayouts(),
@@ -188,8 +188,8 @@ func TestBolivarEdadFueraRango_SoloConDeudaMayor20M(t *testing.T) {
 		BolivarDebtManualThreshold: 20_000_000,
 	}
 	values := map[string]string{
-		"birth_date":          "09-27-46",
-		"loan_award_date":     "04-05-23",
+		"birth_date":          "27-09-46",
+		"loan_award_date":     "05-04-23",
 		"initial_debt_amount": "15000000",
 	}
 	det := evaluarEdadDetalle(values, cfg, false, "BOLIVAR_BANCO")
@@ -210,8 +210,8 @@ func TestApplyBolivarDiagramRules_SinIncidenciaDeuda20MSola(t *testing.T) {
 		"initial_debt_amount": "25000000",
 		"rate_percent":        "0.001",
 		"monthly_premium":     "25000",
-		"loan_award_date":     "01-20-22",
-		"loan_due_date_current": "05-15-26",
+		"loan_award_date":     "20-01-22",
+		"loan_due_date_current": "15-05-26",
 	}
 	cfg := ruleRuntimeConfig{
 		BolivarPrimaCalcTolerance:  1,
@@ -259,7 +259,7 @@ func TestBolivarMesFacturacionDesdeArchivo_Abril(t *testing.T) {
 
 func TestBolivarVencimientoInferior_PrimaCeroConVencPasadoSiGeneraInforme(t *testing.T) {
 	values := map[string]string{
-		"loan_due_date_current": "02-16-26",
+		"loan_due_date_current": "16-02-26",
 		"monthly_premium":       "0",
 		"_file_name":            "MICRO_BANCO_ABRIL_VF_Pruebas.xlsx",
 	}
@@ -274,7 +274,7 @@ func TestBolivarVencimientoInferior_PrimaCeroConVencPasadoSiGeneraInforme(t *tes
 	found := false
 	for _, s := range soft {
 		up := strings.ToUpper(s)
-		if strings.Contains(up, "PRIMA CERO") || strings.Contains(up, "ANTERIOR AL MES") {
+		if strings.Contains(up, "VENCIMIENTO (E.10)") {
 			found = true
 		}
 	}
@@ -285,7 +285,7 @@ func TestBolivarVencimientoInferior_PrimaCeroConVencPasadoSiGeneraInforme(t *tes
 
 func TestBolivarVencimientoInferior_PrimaPositivaInformeNoBloquea(t *testing.T) {
 	values := map[string]string{
-		"loan_due_date_current": "02-16-26",
+		"loan_due_date_current": "16-02-26",
 		"monthly_premium":       "25000",
 		"_file_name":            "MICRO_BANCO_ABRIL_VF_Pruebas.xlsx",
 	}
@@ -299,7 +299,7 @@ func TestBolivarVencimientoInferior_PrimaPositivaInformeNoBloquea(t *testing.T) 
 	}
 	found := false
 	for _, s := range soft {
-		if strings.Contains(strings.ToUpper(s), "REVISAR PRIMA") || strings.Contains(strings.ToUpper(s), "ANTERIOR AL MES") {
+		if strings.Contains(strings.ToUpper(s), "VENCIMIENTO (E.10)") {
 			found = true
 		}
 	}
@@ -321,10 +321,10 @@ func TestBolivarVencimiento_MayoCargueAbrilHaciaAtras(t *testing.T) {
 		due      string
 		informar bool
 	}{
-		{"04-15-26", true},  // abril → informe (mes anterior a mayo)
-		{"03-15-26", true},  // marzo → informe
-		{"05-15-26", false}, // mayo cargue → OK
-		{"06-15-26", false}, // junio → OK
+		{"15-04-26", true},  // abril → informe (mes anterior a mayo)
+		{"15-03-26", true},  // marzo → informe
+		{"15-05-26", false}, // mayo cargue → OK
+		{"15-06-26", false}, // junio → OK
 	}
 	for _, tc := range cases {
 		values := map[string]string{
@@ -336,7 +336,7 @@ func TestBolivarVencimiento_MayoCargueAbrilHaciaAtras(t *testing.T) {
 		tiene := false
 		for _, s := range soft {
 			low := strings.ToLower(s)
-			if strings.Contains(low, "anterior al mes") {
+			if strings.Contains(low, "vencimiento (e.10)") {
 				tiene = true
 			}
 		}
@@ -388,10 +388,10 @@ func TestBolivarVencimiento_AbrilCargueMarzoHaciaAtras(t *testing.T) {
 		due      string
 		informar bool
 	}{
-		{"03-15-26", true},  // marzo → informe
-		{"02-16-26", true},  // febrero → informe
-		{"04-15-26", false}, // abril cargue → OK
-		{"05-15-26", false}, // mayo → OK
+		{"15-03-26", true},  // marzo → informe
+		{"16-02-26", true},  // febrero → informe
+		{"15-04-26", false}, // abril cargue → OK
+		{"15-05-26", false}, // mayo → OK
 	}
 	for _, tc := range cases {
 		values := map[string]string{
@@ -403,7 +403,7 @@ func TestBolivarVencimiento_AbrilCargueMarzoHaciaAtras(t *testing.T) {
 		tiene := false
 		for _, s := range soft {
 			low := strings.ToLower(s)
-			if strings.Contains(low, "anterior al mes") {
+			if strings.Contains(low, "vencimiento (e.10)") {
 				tiene = true
 			}
 		}
@@ -453,5 +453,27 @@ func TestBolivarPlazoCalculadoMeses_Anexo(t *testing.T) {
 	due := base.AddDate(0, 0, 46058)
 	if got := bolivarPlazoCalculadoMeses(adj, due); got != 53 {
 		t.Fatalf("plazo meses: got %d want 53", got)
+	}
+}
+
+func TestMensajeBolivarVencimientoE10_ExplicaControl(t *testing.T) {
+	values := map[string]string{
+		"loan_due_date_current": "03-15-26",
+		"_file_name":            "4. Deudores_Banco_Bolivar__Pyme_BANCO_ABRIL.xlsx",
+	}
+	due := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+	msg := mensajeBolivarVencimientoMesAnteriorAlCargue(values, due, 2026, time.April, 25000)
+	for _, want := range []string{
+		"VENCIMIENTO (E.10)",
+		"FECHA VENCIMIENTO ACTUAL",
+		"03-15-26",
+		"mes de cargue ABRIL/2026",
+		"Pyme_BANCO_ABRIL",
+		"04/2026",
+		"no bloquea carga",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("falta %q en %q", want, msg)
+		}
 	}
 }

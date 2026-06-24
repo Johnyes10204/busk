@@ -277,11 +277,21 @@ func (s *Store) FindProductFormatCandidates(fileName string) []model.Product {
 
 func (s *Store) AddFileRecord(r model.FileProcessRecord) {
 	sqlStr, args, _ := s.sb.Insert("processed_files").
-		Columns("id", "file_name", "product_id", "file_hash", "status", "error_reason", "validation_report_json", "remote_path", "processed_path", "archive_path", "processed_at").
-		Values(r.ID, r.FileName, nullableString(r.ProductID), nullableString(r.FileHash), string(r.Status), nullableString(r.ErrorReason), nullableString(r.ValidationReportJSON), r.RemotePath, nullableString(r.ProcessedPath), nullableString(r.ArchivePath), r.ProcessedAt).
-		Suffix("ON DUPLICATE KEY UPDATE product_id=VALUES(product_id), file_hash=VALUES(file_hash), status=VALUES(status), error_reason=VALUES(error_reason), validation_report_json=VALUES(validation_report_json), remote_path=VALUES(remote_path), processed_path=VALUES(processed_path), archive_path=VALUES(archive_path), processed_at=VALUES(processed_at)").
+		Columns("id", "file_name", "product_id", "file_hash", "status", "error_reason", "email_error", "validation_report_json", "remote_path", "processed_path", "archive_path", "processed_at").
+		Values(r.ID, r.FileName, nullableString(r.ProductID), nullableString(r.FileHash), string(r.Status), nullableString(r.ErrorReason), nullableString(r.EmailError), nullableString(r.ValidationReportJSON), r.RemotePath, nullableString(r.ProcessedPath), nullableString(r.ArchivePath), r.ProcessedAt).
+		Suffix("ON DUPLICATE KEY UPDATE product_id=VALUES(product_id), file_hash=VALUES(file_hash), status=VALUES(status), error_reason=VALUES(error_reason), email_error=VALUES(email_error), validation_report_json=VALUES(validation_report_json), remote_path=VALUES(remote_path), processed_path=VALUES(processed_path), archive_path=VALUES(archive_path), processed_at=VALUES(processed_at)").
 		ToSql()
 	_, _ = s.db.Exec(sqlStr, args...)
+}
+
+// SetFileEmailError persiste el fallo de notificación por correo del archivo.
+func (s *Store) SetFileEmailError(fileID, emailError string) error {
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" {
+		return fmt.Errorf("file_id es obligatorio")
+	}
+	_, err := s.db.Exec(`UPDATE processed_files SET email_error = ? WHERE id = ?`, nullableString(emailError), fileID)
+	return err
 }
 
 // FileHashAlreadyProcessed indica si ya se trató un archivo con el mismo contenido (SHA-256
@@ -552,7 +562,7 @@ func (s *Store) PolicyCreditExists(productID, creditNumber string) bool {
 }
 
 func (s *Store) ListFileRecords() []model.FileProcessRecord {
-	sqlStr, args, _ := s.sb.Select("id", "file_name", "product_id", "file_hash", "status", "error_reason", "remote_path", "processed_path", "archive_path", "processed_at").
+	sqlStr, args, _ := s.sb.Select("id", "file_name", "product_id", "file_hash", "status", "error_reason", "email_error", "remote_path", "processed_path", "archive_path", "processed_at").
 		From("processed_files").
 		OrderBy("processed_at DESC").
 		ToSql()
@@ -565,9 +575,9 @@ func (s *Store) ListFileRecords() []model.FileProcessRecord {
 	out := make([]model.FileProcessRecord, 0)
 	for rows.Next() {
 		var r model.FileProcessRecord
-		var productID, fileHash, errorReason, processedPath, archivePath sql.NullString
+		var productID, fileHash, errorReason, emailError, processedPath, archivePath sql.NullString
 		var status string
-		if err := rows.Scan(&r.ID, &r.FileName, &productID, &fileHash, &status, &errorReason, &r.RemotePath, &processedPath, &archivePath, &r.ProcessedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.FileName, &productID, &fileHash, &status, &errorReason, &emailError, &r.RemotePath, &processedPath, &archivePath, &r.ProcessedAt); err != nil {
 			continue
 		}
 		if productID.Valid {
@@ -578,6 +588,9 @@ func (s *Store) ListFileRecords() []model.FileProcessRecord {
 		}
 		if errorReason.Valid {
 			r.ErrorReason = errorReason.String
+		}
+		if emailError.Valid {
+			r.EmailError = emailError.String
 		}
 		if processedPath.Valid {
 			r.ProcessedPath = processedPath.String
@@ -592,15 +605,15 @@ func (s *Store) ListFileRecords() []model.FileProcessRecord {
 }
 
 func (s *Store) GetFileRecordByID(fileID string) (model.FileProcessRecord, bool) {
-	sqlStr, args, _ := s.sb.Select("id", "file_name", "product_id", "file_hash", "status", "error_reason", "remote_path", "processed_path", "archive_path", "processed_at").
+	sqlStr, args, _ := s.sb.Select("id", "file_name", "product_id", "file_hash", "status", "error_reason", "email_error", "remote_path", "processed_path", "archive_path", "processed_at").
 		From("processed_files").
 		Where(sq.Eq{"id": fileID}).
 		Limit(1).
 		ToSql()
 	var r model.FileProcessRecord
-	var productID, fileHash, errorReason, processedPath, archivePath sql.NullString
+	var productID, fileHash, errorReason, emailError, processedPath, archivePath sql.NullString
 	var status string
-	err := s.db.QueryRow(sqlStr, args...).Scan(&r.ID, &r.FileName, &productID, &fileHash, &status, &errorReason, &r.RemotePath, &processedPath, &archivePath, &r.ProcessedAt)
+	err := s.db.QueryRow(sqlStr, args...).Scan(&r.ID, &r.FileName, &productID, &fileHash, &status, &errorReason, &emailError, &r.RemotePath, &processedPath, &archivePath, &r.ProcessedAt)
 	if err != nil {
 		return model.FileProcessRecord{}, false
 	}
@@ -612,6 +625,9 @@ func (s *Store) GetFileRecordByID(fileID string) (model.FileProcessRecord, bool)
 	}
 	if errorReason.Valid {
 		r.ErrorReason = errorReason.String
+	}
+	if emailError.Valid {
+		r.EmailError = emailError.String
 	}
 	if processedPath.Valid {
 		r.ProcessedPath = processedPath.String
@@ -901,6 +917,7 @@ func validationReportClientRows(r FileValidationReport) [][]string {
 		"estado_poliza",
 		"cantidad_novedades",
 		"novedades_json",
+		"observaciones",
 		"detalle_novedad",
 	}
 	out := [][]string{header}
@@ -972,6 +989,7 @@ func validationReportClientRows(r FileValidationReport) [][]string {
 			etiquetaEstadoPolizaInforme(pv.PolicyStatus),
 			strconv.Itoa(len(notes)),
 			string(jsonNotes),
+			observacionesForRow(notes, pv.PolicyStatus),
 			detail,
 		})
 		nData++
@@ -1000,6 +1018,7 @@ func validationReportClientRows(r FileValidationReport) [][]string {
 				"",
 				"1",
 				string(jsonNotes),
+				observacionesForRow(notes, ""),
 				detail,
 			})
 			nData++
@@ -1022,6 +1041,7 @@ func validationReportClientRows(r FileValidationReport) [][]string {
 				etiquetaEstadoPolizaInforme(r.FileStatus),
 				"1",
 				string(jsonNotes),
+				observacionesForRow(notes, r.FileStatus),
 				er,
 			})
 		}
@@ -1042,6 +1062,7 @@ func validationReportInformativeRows(r FileValidationReport) [][]string {
 		"estado_poliza",
 		"cantidad_avisos",
 		"avisos_json",
+		"observaciones",
 		"detalle_aviso",
 	}
 	out := [][]string{header}
@@ -1081,6 +1102,7 @@ func validationReportInformativeRows(r FileValidationReport) [][]string {
 			etiquetaEstadoPolizaInforme(pv.PolicyStatus),
 			strconv.Itoa(len(notes)),
 			string(jsonNotes),
+			observacionesForRow(notes, pv.PolicyStatus),
 			detail,
 		})
 	}
@@ -1546,6 +1568,10 @@ func (s *Store) runMigrations() error {
 		2026042912: {
 			name: "add_validation_report_json_to_processed_files",
 			sql:  `ALTER TABLE processed_files ADD COLUMN validation_report_json JSON NULL`,
+		},
+		2026052113: {
+			name: "add_email_error_to_processed_files",
+			sql:  `ALTER TABLE processed_files ADD COLUMN email_error TEXT NULL`,
 		},
 	}
 
