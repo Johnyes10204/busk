@@ -57,6 +57,9 @@ func etiquetasResumenFromNote(note string) []string {
 		add("REVISAR FIN VIGENCIA")
 	case strings.Contains(t, "INICIO VIGENCIA FUERA DEL MES ESPERADO"):
 		add("INICIO VIGENCIA FUERA DEL MES ESPERADO")
+	case strings.Contains(t, "PRIMA") && (strings.Contains(t, "NO COINCIDE CON EL PLAN") ||
+		strings.Contains(t, "OBLIGATORIA PARA VALIDAR EL PLAN")):
+		add("REVISAR PRIMA (PLAN)")
 	case strings.Contains(t, "REVISAR PRIMA"):
 		add("REVISAR PRIMA")
 	case strings.Contains(t, "REVISAR PLAZO"):
@@ -84,15 +87,104 @@ func etiquetasResumenFromNote(note string) []string {
 	case strings.Contains(t, "ES OBLIGATORIO") || strings.Contains(t, "DEBE SER NUMÉRICO") ||
 		strings.Contains(t, "DEBE SER MAYOR") || strings.Contains(t, "DEBE ESTAR ENTRE") ||
 		strings.Contains(t, "NO ESTÁ EN EL CATÁLOGO"):
-		add("VALIDACIÓN CAMPO")
+		if tag := revisarTagPorCampo(t); tag != "" {
+			add(tag)
+		} else {
+			add("VALIDACIÓN CAMPO")
+		}
 	case strings.Contains(t, "REVISIÓN MANUAL") || strings.Contains(t, "INCIDENCIA SIN DETALLE"):
 		add("REVISIÓN MANUAL")
 	case strings.Contains(t, "REGLA DE VALIDACIÓN NO RECONOCIDA"):
 		add("CONFIGURACIÓN REGLA")
 	default:
-		add("REVISAR")
+		if tag := revisarTagPorCampo(t); tag != "" {
+			add(tag)
+		} else {
+			add("REVISAR")
+		}
 	}
 	return tags
+}
+
+// revisarTagPorCampo devuelve un tag específico (REVISAR EDAD, REVISAR PRIMA, …)
+// cuando reconoce el campo en el texto de la nota (preferentemente entre «»,
+// con un respaldo de palabras clave). Devuelve "" si no encuentra coincidencia.
+func revisarTagPorCampo(t string) string {
+	if tag := revisarTagFromCampoLiteral(extraerCampoEntreComillas(t)); tag != "" {
+		return tag
+	}
+	switch {
+	case strings.Contains(t, "VALOR ASEGURADO"):
+		return "REVISAR VALOR ASEGURADO"
+	case strings.Contains(t, "FIN DE VIGENCIA") || strings.Contains(t, "FIN VIGENCIA"):
+		return "REVISAR FIN VIGENCIA"
+	case strings.Contains(t, "INICIO DE VIGENCIA") || strings.Contains(t, "INICIO VIGENCIA"):
+		return "REVISAR INICIO VIGENCIA"
+	case strings.Contains(t, "EDAD"):
+		return "REVISAR EDAD"
+	case strings.Contains(t, "PRIMA"):
+		return "REVISAR PRIMA"
+	case strings.Contains(t, "DEUDA"):
+		return "REVISAR DEUDA"
+	case strings.Contains(t, "PLAZO"):
+		return "REVISAR PLAZO"
+	case strings.Contains(t, "VENCIMIENTO"):
+		return "REVISAR VENCIMIENTO"
+	case strings.Contains(t, "PLAN"):
+		return "REVISAR PLAN"
+	case strings.Contains(t, "IDENTIFICACIÓN"):
+		return "REVISAR IDENTIFICACIÓN"
+	case strings.Contains(t, "CRÉDITO") || strings.Contains(t, "OP BT"):
+		return "REVISAR CRÉDITO"
+	}
+	return ""
+}
+
+func extraerCampoEntreComillas(t string) string {
+	open := strings.Index(t, "«")
+	if open < 0 {
+		return ""
+	}
+	rest := t[open+len("«"):]
+	close := strings.Index(rest, "»")
+	if close < 0 {
+		return ""
+	}
+	return strings.TrimSpace(rest[:close])
+}
+
+func revisarTagFromCampoLiteral(campo string) string {
+	c := strings.ToUpper(strings.TrimSpace(campo))
+	if c == "" {
+		return ""
+	}
+	switch {
+	case strings.Contains(c, "VALOR ASEGURADO"):
+		return "REVISAR VALOR ASEGURADO"
+	case strings.Contains(c, "FIN DE VIGENCIA") || strings.Contains(c, "FIN VIGENCIA"):
+		return "REVISAR FIN VIGENCIA"
+	case strings.Contains(c, "INICIO DE VIGENCIA") || strings.Contains(c, "INICIO VIGENCIA"):
+		return "REVISAR INICIO VIGENCIA"
+	case strings.Contains(c, "EDAD"):
+		return "REVISAR EDAD"
+	case strings.Contains(c, "PRIMA"):
+		return "REVISAR PRIMA"
+	case strings.Contains(c, "DEUDA"):
+		return "REVISAR DEUDA"
+	case strings.Contains(c, "PLAZO"):
+		return "REVISAR PLAZO"
+	case strings.Contains(c, "VENCIMIENTO"):
+		return "REVISAR VENCIMIENTO"
+	case strings.Contains(c, "PLAN"):
+		return "REVISAR PLAN"
+	case strings.Contains(c, "IDENTIFICACIÓN"):
+		return "REVISAR IDENTIFICACIÓN"
+	case strings.Contains(c, "CRÉDITO") || strings.Contains(c, "OP BT"):
+		return "REVISAR CRÉDITO"
+	case strings.Contains(c, "FECHA"):
+		return "REVISAR FECHA"
+	}
+	return ""
 }
 
 // etiquetaResumenFalta acorta «FALTA FECHA DE …» a una etiqueta filtrable con el campo concreto.

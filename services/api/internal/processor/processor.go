@@ -437,6 +437,7 @@ func (s *Service) processOne(c *sftpclient.Client, job queuedJob) model.FileProc
 			return rec
 		}
 		rec.ValidationReportJSON = string(b)
+		rec.ReportArchivePath = saveValidationReportArchive(report, rec.ID, fileName)
 		rec.Status = model.FileStatusError
 		rec.ErrorReason = summary
 		rec.ProcessedPath = moveRemoteFile(c, fileName, "ERROR")
@@ -495,7 +496,7 @@ func (s *Service) processOne(c *sftpclient.Client, job queuedJob) model.FileProc
 	}
 	s.updateProgress(job.ID, job.FileName, "PROCESSING", 85, "validaciones OK", selectedProductID, "")
 
-	rec.ValidationReportJSON = validationReportJSONFromPolicies(
+	rec.ValidationReportJSON, rec.ReportArchivePath = validationReportFromPolicies(
 		rec.ID,
 		fileName,
 		selectedProductID,
@@ -522,12 +523,14 @@ func (s *Service) processOne(c *sftpclient.Client, job queuedJob) model.FileProc
 	return rec
 }
 
-// validationReportJSONFromPolicies persiste el informe cuando hay novedades (informes o incidencias).
-func validationReportJSONFromPolicies(
+// validationReportFromPolicies construye el informe del archivo, lo guarda en disco para
+// auditoría (carpeta REPORTS_ARCHIVE_DIR) y devuelve el JSON serializado (vacío cuando no hay novedades)
+// junto con la ruta donde quedó el XLSX (vacía si la escritura falló).
+func validationReportFromPolicies(
 	fileID, fileName, productID, fileStatus, errorReason string,
 	processedAt time.Time,
 	policies []model.PolicyRecord,
-) string {
+) (string, string) {
 	report := store.BuildFileValidationReportFromPolicies(
 		fileID,
 		fileName,
@@ -537,15 +540,16 @@ func validationReportJSONFromPolicies(
 		processedAt.UTC().Format(time.RFC3339Nano),
 		policies,
 	)
+	archivePath := saveValidationReportArchive(report, fileID, fileName)
 	if report.TotalInformativeValidations == 0 && report.TotalPendingValidations == 0 {
-		return ""
+		return "", archivePath
 	}
 	b, err := json.Marshal(report)
 	if err != nil {
 		log.Printf("[processor] no se pudo serializar informe de novedades file_id=%s err=%v", fileID, err)
-		return ""
+		return "", archivePath
 	}
-	return string(b)
+	return string(b), archivePath
 }
 
 func validateFile(r io.Reader, fileID, fileName string, candidates []model.Product, svc *Service) ([]model.PolicyRecord, string, string, string, error) {

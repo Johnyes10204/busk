@@ -12,6 +12,11 @@ import (
 
 const frozenInformativeNote = "La prima mensual es cero; la póliza se registra como congelada (no bloquea la carga del archivo)."
 
+const (
+	observacionSinNovedad      = "Sin novedad"
+	observacionPolizaCancelada = "Póliza cancelada"
+)
+
 // FileExportedRow replica una fila del archivo procesada más observaciones resumidas y novedades.
 type FileExportedRow struct {
 	RowNumber    int               `json:"row_number"`
@@ -106,83 +111,58 @@ func policyRowNotes(in policyRowInput) []string {
 	return notes
 }
 
-// shouldExportMirrorRow: hoja «Datos archivo» solo filas que fallaron la validación (incidencias o revisión manual).
-// No incluye congeladas ni filas con únicamente informes informativos.
-func shouldExportMirrorRow(in policyRowInput, blocking []string) bool {
-	if len(blocking) > 0 {
-		return true
-	}
-	return strings.EqualFold(strings.TrimSpace(in.PolicyStatus), "MANUAL_REVIEW")
-}
-
-func buildFileExportedRows(inputs []policyRowInput) (sourceCols []string, rows []FileExportedRow) {
-	rows = make([]FileExportedRow, 0)
-	failedInputs := make([]policyRowInput, 0)
-	for _, in := range inputs {
-		if strings.EqualFold(strings.TrimSpace(in.PolicyStatus), "CANCELLED") {
-			continue
-		}
-		notes := policyRowNotes(in)
-		blocking, _ := validationnotes.Split(notes)
-		if !shouldExportMirrorRow(in, blocking) {
-			continue
-		}
-		raw := parseRawDataMap(in.RawDataJSON)
-		trimmed := trimNotesPreserveAll(blocking)
-		novedades := formatNovedadesColumn(trimmed)
-		if strings.TrimSpace(novedades) == "" {
-			novedades = defaultPendingRowDetailMessage(in.PolicyStatus, len(blocking) > 0)
-		}
-		failedInputs = append(failedInputs, in)
-		rows = append(rows, FileExportedRow{
-			RowNumber:     in.RowNumber,
-			PolicyStatus:  strings.TrimSpace(in.PolicyStatus),
-			Data:          raw,
-			Observaciones: observacionesForRow(trimmed, in.PolicyStatus),
-			Novedades:     novedades,
-		})
-	}
-	sourceCols = collectSourceColumns(failedInputs)
-	sort.Slice(rows, func(i, j int) bool {
-		return rows[i].RowNumber < rows[j].RowNumber
-	})
-	return sourceCols, rows
-}
-
-// buildFileExportedRowsEmail: filas para la única hoja del adjunto de correo.
-// Incluye cualquier fila con incidencias bloqueantes, revisión manual o avisos informativos.
-// Concatena en novedades primero las bloqueantes y luego las informativas.
-func buildFileExportedRowsEmail(inputs []policyRowInput) (sourceCols []string, rows []FileExportedRow) {
-	rows = make([]FileExportedRow, 0)
-	keptInputs := make([]policyRowInput, 0)
+// buildFileMirrorRows arma el espejo del archivo original: incluye TODAS las filas.
+// Filas con incidencias o avisos: observaciones+novedades con el detalle.
+// Filas CANCELLED: observación "Póliza cancelada", sin novedades.
+// Filas limpias: observación "Sin novedad", sin novedades.
+func buildFileMirrorRows(inputs []policyRowInput) (sourceCols []string, rows []FileExportedRow) {
+	rows = make([]FileExportedRow, 0, len(inputs))
 	for _, in := range inputs {
 		st := strings.TrimSpace(in.PolicyStatus)
+		raw := parseRawDataMap(in.RawDataJSON)
+
 		if strings.EqualFold(st, "CANCELLED") {
+			rows = append(rows, FileExportedRow{
+				RowNumber:     in.RowNumber,
+				PolicyStatus:  st,
+				Data:          raw,
+				Observaciones: observacionPolizaCancelada,
+				Novedades:     "",
+			})
 			continue
 		}
+
 		notes := policyRowNotes(in)
 		blocking, info := validationnotes.Split(notes)
 		if strings.EqualFold(st, "FROZEN") && len(info) == 0 && len(blocking) == 0 {
 			info = []string{validationnotes.Informativo(frozenInformativeNote)}
 		}
+
 		if len(blocking) == 0 && len(info) == 0 && !strings.EqualFold(st, "MANUAL_REVIEW") {
+			rows = append(rows, FileExportedRow{
+				RowNumber:     in.RowNumber,
+				PolicyStatus:  st,
+				Data:          raw,
+				Observaciones: observacionSinNovedad,
+				Novedades:     "",
+			})
 			continue
 		}
+
 		combined := trimNotesPreserveAll(append(append([]string{}, blocking...), info...))
 		novedades := formatNovedadesColumn(combined)
 		if strings.TrimSpace(novedades) == "" {
 			novedades = defaultPendingRowDetailMessage(in.PolicyStatus, len(combined) > 0)
 		}
-		keptInputs = append(keptInputs, in)
 		rows = append(rows, FileExportedRow{
 			RowNumber:     in.RowNumber,
 			PolicyStatus:  st,
-			Data:          parseRawDataMap(in.RawDataJSON),
+			Data:          raw,
 			Observaciones: observacionesForRow(combined, st),
 			Novedades:     novedades,
 		})
 	}
-	sourceCols = collectSourceColumns(keptInputs)
+	sourceCols = collectSourceColumns(inputs)
 	sort.Slice(rows, func(i, j int) bool {
 		return rows[i].RowNumber < rows[j].RowNumber
 	})

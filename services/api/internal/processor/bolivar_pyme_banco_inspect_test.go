@@ -203,7 +203,8 @@ func TestPymeBancoAbrilArchivo_InformeReportaNovedades(t *testing.T) {
 	if report.TotalInformativeValidations == 0 {
 		t.Fatal("debe haber informes (congeladas y/o vencimiento)")
 	}
-	jsonReport := validationReportJSONFromPolicies(
+	t.Setenv("REPORTS_ARCHIVE_DIR", t.TempDir())
+	jsonReport, archivePath := validationReportFromPolicies(
 		"file_test_pyme",
 		"4. Deudores_Banco_Bolivar__Pyme_BANCO_ABRIL.xlsx",
 		"bolivar_inclusion_deudores_banco",
@@ -213,7 +214,13 @@ func TestPymeBancoAbrilArchivo_InformeReportaNovedades(t *testing.T) {
 		policies,
 	)
 	if jsonReport == "" {
-		t.Fatal("validationReportJSONFromPolicies no debe quedar vacío")
+		t.Fatal("validationReportFromPolicies no debe quedar vacío")
+	}
+	if archivePath == "" {
+		t.Fatal("se esperaba ruta de XLSX de auditoría")
+	}
+	if _, err := os.Stat(archivePath); err != nil {
+		t.Fatalf("XLSX de auditoría no encontrado en %s: %v", archivePath, err)
 	}
 }
 

@@ -14,6 +14,7 @@ type FileConfig struct {
 	ProcessorWorkers             int      `json:"processor_workers"`
 	ProcessorReadFullOnRowErrors *bool    `json:"processor_read_full_file_on_row_errors"`
 	FilesArchiveDir              string   `json:"files_archive_dir"`
+	ReportsArchiveDir            string   `json:"reports_archive_dir"`
 	SFTPHost                     string   `json:"sftp_host"`
 	SFTPPort                     string   `json:"sftp_port"`
 	SFTPUser                     string   `json:"sftp_user"`
@@ -71,6 +72,7 @@ func readConfig(path string) (FileConfig, error) {
 func apply(cfg FileConfig) {
 	setIfValue("MYSQL_DSN", cfg.MySQLDSN)
 	setIfValue("FILES_ARCHIVE_DIR", cfg.FilesArchiveDir)
+	setIfValue("REPORTS_ARCHIVE_DIR", cfg.ReportsArchiveDir)
 	setIfValue("SFTP_HOST", cfg.SFTPHost)
 	setIfValue("SFTP_PORT", cfg.SFTPPort)
 	setIfValue("SFTP_USER", cfg.SFTPUser)

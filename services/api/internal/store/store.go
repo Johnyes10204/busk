@@ -277,9 +277,9 @@ func (s *Store) FindProductFormatCandidates(fileName string) []model.Product {
 
 func (s *Store) AddFileRecord(r model.FileProcessRecord) {
 	sqlStr, args, _ := s.sb.Insert("processed_files").
-		Columns("id", "file_name", "product_id", "file_hash", "status", "error_reason", "email_error", "validation_report_json", "remote_path", "processed_path", "archive_path", "processed_at").
-		Values(r.ID, r.FileName, nullableString(r.ProductID), nullableString(r.FileHash), string(r.Status), nullableString(r.ErrorReason), nullableString(r.EmailError), nullableString(r.ValidationReportJSON), r.RemotePath, nullableString(r.ProcessedPath), nullableString(r.ArchivePath), r.ProcessedAt).
-		Suffix("ON DUPLICATE KEY UPDATE product_id=VALUES(product_id), file_hash=VALUES(file_hash), status=VALUES(status), error_reason=VALUES(error_reason), email_error=VALUES(email_error), validation_report_json=VALUES(validation_report_json), remote_path=VALUES(remote_path), processed_path=VALUES(processed_path), archive_path=VALUES(archive_path), processed_at=VALUES(processed_at)").
+		Columns("id", "file_name", "product_id", "file_hash", "status", "error_reason", "email_error", "validation_report_json", "remote_path", "processed_path", "archive_path", "report_archive_path", "processed_at").
+		Values(r.ID, r.FileName, nullableString(r.ProductID), nullableString(r.FileHash), string(r.Status), nullableString(r.ErrorReason), nullableString(r.EmailError), nullableString(r.ValidationReportJSON), r.RemotePath, nullableString(r.ProcessedPath), nullableString(r.ArchivePath), nullableString(r.ReportArchivePath), r.ProcessedAt).
+		Suffix("ON DUPLICATE KEY UPDATE product_id=VALUES(product_id), file_hash=VALUES(file_hash), status=VALUES(status), error_reason=VALUES(error_reason), email_error=VALUES(email_error), validation_report_json=VALUES(validation_report_json), remote_path=VALUES(remote_path), processed_path=VALUES(processed_path), archive_path=VALUES(archive_path), report_archive_path=VALUES(report_archive_path), processed_at=VALUES(processed_at)").
 		ToSql()
 	_, _ = s.db.Exec(sqlStr, args...)
 }
@@ -562,7 +562,7 @@ func (s *Store) PolicyCreditExists(productID, creditNumber string) bool {
 }
 
 func (s *Store) ListFileRecords() []model.FileProcessRecord {
-	sqlStr, args, _ := s.sb.Select("id", "file_name", "product_id", "file_hash", "status", "error_reason", "email_error", "remote_path", "processed_path", "archive_path", "processed_at").
+	sqlStr, args, _ := s.sb.Select("id", "file_name", "product_id", "file_hash", "status", "error_reason", "email_error", "remote_path", "processed_path", "archive_path", "report_archive_path", "processed_at").
 		From("processed_files").
 		OrderBy("processed_at DESC").
 		ToSql()
@@ -575,9 +575,9 @@ func (s *Store) ListFileRecords() []model.FileProcessRecord {
 	out := make([]model.FileProcessRecord, 0)
 	for rows.Next() {
 		var r model.FileProcessRecord
-		var productID, fileHash, errorReason, emailError, processedPath, archivePath sql.NullString
+		var productID, fileHash, errorReason, emailError, processedPath, archivePath, reportArchivePath sql.NullString
 		var status string
-		if err := rows.Scan(&r.ID, &r.FileName, &productID, &fileHash, &status, &errorReason, &emailError, &r.RemotePath, &processedPath, &archivePath, &r.ProcessedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.FileName, &productID, &fileHash, &status, &errorReason, &emailError, &r.RemotePath, &processedPath, &archivePath, &reportArchivePath, &r.ProcessedAt); err != nil {
 			continue
 		}
 		if productID.Valid {
@@ -598,6 +598,9 @@ func (s *Store) ListFileRecords() []model.FileProcessRecord {
 		if archivePath.Valid {
 			r.ArchivePath = archivePath.String
 		}
+		if reportArchivePath.Valid {
+			r.ReportArchivePath = reportArchivePath.String
+		}
 		r.Status = model.FileProcessStatus(status)
 		out = append(out, r)
 	}
@@ -605,15 +608,15 @@ func (s *Store) ListFileRecords() []model.FileProcessRecord {
 }
 
 func (s *Store) GetFileRecordByID(fileID string) (model.FileProcessRecord, bool) {
-	sqlStr, args, _ := s.sb.Select("id", "file_name", "product_id", "file_hash", "status", "error_reason", "email_error", "remote_path", "processed_path", "archive_path", "processed_at").
+	sqlStr, args, _ := s.sb.Select("id", "file_name", "product_id", "file_hash", "status", "error_reason", "email_error", "remote_path", "processed_path", "archive_path", "report_archive_path", "processed_at").
 		From("processed_files").
 		Where(sq.Eq{"id": fileID}).
 		Limit(1).
 		ToSql()
 	var r model.FileProcessRecord
-	var productID, fileHash, errorReason, emailError, processedPath, archivePath sql.NullString
+	var productID, fileHash, errorReason, emailError, processedPath, archivePath, reportArchivePath sql.NullString
 	var status string
-	err := s.db.QueryRow(sqlStr, args...).Scan(&r.ID, &r.FileName, &productID, &fileHash, &status, &errorReason, &emailError, &r.RemotePath, &processedPath, &archivePath, &r.ProcessedAt)
+	err := s.db.QueryRow(sqlStr, args...).Scan(&r.ID, &r.FileName, &productID, &fileHash, &status, &errorReason, &emailError, &r.RemotePath, &processedPath, &archivePath, &reportArchivePath, &r.ProcessedAt)
 	if err != nil {
 		return model.FileProcessRecord{}, false
 	}
@@ -634,6 +637,9 @@ func (s *Store) GetFileRecordByID(fileID string) (model.FileProcessRecord, bool)
 	}
 	if archivePath.Valid {
 		r.ArchivePath = archivePath.String
+	}
+	if reportArchivePath.Valid {
+		r.ReportArchivePath = reportArchivePath.String
 	}
 	r.Status = model.FileProcessStatus(status)
 	return r, true
@@ -898,8 +904,11 @@ func completeFileValidationReport(
 	out.TotalPendingValidations = len(pending)
 	out.InformativeValidations = informative
 	out.TotalInformativeValidations = len(informative)
-	out.SourceColumns, out.ExportedRows = buildFileExportedRows(inputs)
-	out.EmailSourceColumns, out.EmailExportedRows = buildFileExportedRowsEmail(inputs)
+	sourceCols, mirrorRows := buildFileMirrorRows(inputs)
+	out.SourceColumns = sourceCols
+	out.ExportedRows = mirrorRows
+	out.EmailSourceColumns = sourceCols
+	out.EmailExportedRows = mirrorRows
 	return out
 }
 
@@ -1049,66 +1058,6 @@ func validationReportClientRows(r FileValidationReport) [][]string {
 	return out
 }
 
-// validationReportInformativeRows: misma estructura que incidencias, para la hoja «Informes» del Excel (no bloquean carga).
-func validationReportInformativeRows(r FileValidationReport) [][]string {
-	header := []string{
-		"tipo_registro",
-		"nombre_archivo",
-		"file_id",
-		"producto_id",
-		"fila_excel",
-		"identificacion_afiliado",
-		"numero_credito",
-		"estado_poliza",
-		"cantidad_avisos",
-		"avisos_json",
-		"observaciones",
-		"detalle_aviso",
-	}
-	out := [][]string{header}
-	fileName := strings.TrimSpace(r.FileName)
-	fileID := strings.TrimSpace(r.FileID)
-	productID := strings.TrimSpace(r.ProductID)
-
-	byRow := make(map[int]FilePendingValidation)
-	for _, pv := range r.InformativeValidations {
-		ex, ok := byRow[pv.RowNumber]
-		if !ok {
-			byRow[pv.RowNumber] = pv
-			continue
-		}
-		ex.Notes = append(append([]string{}, ex.Notes...), pv.Notes...)
-		byRow[pv.RowNumber] = ex
-	}
-	rowNums := make([]int, 0, len(byRow))
-	for rn := range byRow {
-		rowNums = append(rowNums, rn)
-	}
-	sort.Ints(rowNums)
-
-	for _, rn := range rowNums {
-		pv := byRow[rn]
-		notes := trimNotesPreserveAll(pv.Notes)
-		detail := formatNovedadesColumn(notes)
-		jsonNotes, _ := json.Marshal(notes)
-		out = append(out, []string{
-			"Informe informativo",
-			fileName,
-			fileID,
-			productID,
-			strconv.Itoa(pv.RowNumber),
-			strings.TrimSpace(pv.DocumentNumber),
-			strings.TrimSpace(pv.CreditNumber),
-			etiquetaEstadoPolizaInforme(pv.PolicyStatus),
-			strconv.Itoa(len(notes)),
-			string(jsonNotes),
-			observacionesForRow(notes, pv.PolicyStatus),
-			detail,
-		})
-	}
-	return out
-}
-
 func trimNotesPreserveAll(notes []string) []string {
 	out := make([]string, 0, len(notes))
 	for _, n := range notes {
@@ -1195,48 +1144,24 @@ func ValidationReportClientCSV(r FileValidationReport) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// validationReportXLSX escribe hojas Incidencias e Informes; includeMirror añade «Datos archivo».
-func validationReportXLSX(r FileValidationReport, includeMirror bool) ([]byte, error) {
+// ValidationReportClientXLSX genera un libro Excel (.xlsx) con una sola hoja «Datos archivo»:
+// espejo del origen con columnas observaciones y novedades que ya consolidan bloqueantes,
+// avisos informativos y revisión manual por fila.
+func ValidationReportClientXLSX(r FileValidationReport) ([]byte, error) {
 	f := excelize.NewFile()
 	defer func() { _ = f.Close() }()
-	const sheetIncidencias = "Incidencias"
-	const sheetInformes = "Informes"
-	if err := f.SetSheetName("Sheet1", sheetIncidencias); err != nil {
+	const sheetDatos = "Datos archivo"
+	if err := f.SetSheetName("Sheet1", sheetDatos); err != nil {
 		return nil, err
 	}
-	if _, err := f.NewSheet(sheetInformes); err != nil {
+	if err := writeValidationReportMirrorSheet(f, sheetDatos, validationReportMirrorRows(r)); err != nil {
 		return nil, err
 	}
-	if err := writeValidationReportSheet(f, sheetIncidencias, validationReportClientRows(r)); err != nil {
-		return nil, err
-	}
-	if err := writeValidationReportSheet(f, sheetInformes, validationReportInformativeRows(r)); err != nil {
-		return nil, err
-	}
-	if includeMirror {
-		const sheetDatos = "Datos archivo"
-		if _, err := f.NewSheet(sheetDatos); err != nil {
-			return nil, err
-		}
-		if err := writeValidationReportMirrorSheet(f, sheetDatos, validationReportMirrorRows(r)); err != nil {
-			return nil, err
-		}
-	}
-	idxInc, _ := f.GetSheetIndex(sheetIncidencias)
-	f.SetActiveSheet(idxInc)
 	buf, err := f.WriteToBuffer()
 	if err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
-}
-
-// ValidationReportClientXLSX genera un libro Excel (.xlsx):
-// hoja «Incidencias» = bloquean o revisión manual (mismo contenido que el CSV);
-// hoja «Informes» = avisos informativos (p. ej. vencimiento anterior al mes de facturación) sin frenar la carga;
-// hoja «Datos archivo» = espejo del origen con novedades.
-func ValidationReportClientXLSX(r FileValidationReport) ([]byte, error) {
-	return validationReportXLSX(r, true)
 }
 
 // ValidationReportEmailXLSX es el adjunto de correo: una única hoja que replica la estructura del archivo
@@ -1277,40 +1202,6 @@ func ValidationReportXLSXForErrorEmail(fileName, fileID, productID, errorReason 
 		}},
 	}
 	return ValidationReportEmailXLSX(r)
-}
-
-func writeValidationReportSheet(f *excelize.File, sheet string, rows [][]string) error {
-	for ri, row := range rows {
-		for ci, val := range row {
-			cell, err := excelize.CoordinatesToCellName(ci+1, ri+1)
-			if err != nil {
-				return err
-			}
-			if err := f.SetCellValue(sheet, cell, val); err != nil {
-				return err
-			}
-		}
-	}
-	_ = f.SetColWidth(sheet, "A", "A", 28)
-	_ = f.SetColWidth(sheet, "B", "B", 36)
-	_ = f.SetColWidth(sheet, "C", "D", 14)
-	_ = f.SetColWidth(sheet, "E", "E", 12)
-	_ = f.SetColWidth(sheet, "F", "G", 22)
-	_ = f.SetColWidth(sheet, "H", "H", 18)
-	_ = f.SetColWidth(sheet, "I", "I", 12)
-	_ = f.SetColWidth(sheet, "J", "J", 52)
-	_ = f.SetColWidth(sheet, "K", "K", 88)
-	if len(rows) > 1 {
-		if wrapID, err := f.NewStyle(&excelize.Style{
-			Alignment: &excelize.Alignment{WrapText: true, Vertical: "top"},
-		}); err == nil {
-			last := len(rows)
-			lastStr := strconv.Itoa(last)
-			_ = f.SetCellStyle(sheet, "J2", "J"+lastStr, wrapID)
-			_ = f.SetCellStyle(sheet, "K2", "K"+lastStr, wrapID)
-		}
-	}
-	return nil
 }
 
 func formatIntListForCSV(nums []int) string {
@@ -1572,6 +1463,10 @@ func (s *Store) runMigrations() error {
 		2026052113: {
 			name: "add_email_error_to_processed_files",
 			sql:  `ALTER TABLE processed_files ADD COLUMN email_error TEXT NULL`,
+		},
+		2026062414: {
+			name: "add_report_archive_path_to_processed_files",
+			sql:  `ALTER TABLE processed_files ADD COLUMN report_archive_path VARCHAR(800) NULL`,
 		},
 	}
 

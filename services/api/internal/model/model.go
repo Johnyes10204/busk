@@ -63,6 +63,7 @@ type FileProcessRecord struct {
 	RemotePath           string            `json:"remote_path"`
 	ProcessedPath        string            `json:"processed_path,omitempty"`
 	ArchivePath          string            `json:"archive_path,omitempty"`
+	ReportArchivePath    string            `json:"report_archive_path,omitempty"`
 	ProcessedAt          time.Time         `json:"processed_at"`
 }
 

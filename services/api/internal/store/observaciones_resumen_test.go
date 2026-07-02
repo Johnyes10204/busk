@@ -79,3 +79,72 @@ func TestEtiquetasResumenFromNote_cancelacionConFaltaFecha(t *testing.T) {
 		t.Fatalf("got %v", tags)
 	}
 }
+
+func TestEtiquetasResumenFromNote_validacionCampoEsEspecifica(t *testing.T) {
+	cases := []struct {
+		note string
+		want string
+	}{
+		{"El dato «Prima mensual» debe ser numérico.", "REVISAR PRIMA"},
+		{"El dato «Edad» debe estar entre 18 y 75.", "REVISAR EDAD"},
+		{"El dato «Plazo inicial (meses)» es obligatorio.", "REVISAR PLAZO"},
+		{"El dato «Deuda inicial» debe ser mayor que 0.", "REVISAR DEUDA"},
+		{"El dato «Valor asegurado» es obligatorio.", "REVISAR VALOR ASEGURADO"},
+		{"El valor no está en el catálogo permitido para «Nombre del plan».", "REVISAR PLAN"},
+		{"El dato «Identificación del afiliado» es obligatorio.", "REVISAR IDENTIFICACIÓN"},
+		{"El dato «Número de crédito u operación (OP BT)» es obligatorio.", "REVISAR CRÉDITO"},
+		{"El dato «Fecha de vencimiento actual del crédito» es obligatorio.", "REVISAR VENCIMIENTO"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.note, func(t *testing.T) {
+			tags := etiquetasResumenFromNote(validationnotes.Incidencia(tc.note))
+			if len(tags) != 1 || tags[0] != tc.want {
+				t.Fatalf("want [%s], got %v", tc.want, tags)
+			}
+		})
+	}
+}
+
+func TestEtiquetasResumenFromNote_revisarPorCampoEnDefault(t *testing.T) {
+	cases := []struct {
+		note string
+		want string
+	}{
+		{"Edad fuera de tabla técnica.", "REVISAR EDAD"},
+		{"La prima difiere del valor calculado en el archivo.", "REVISAR PRIMA"},
+		{"Valor asegurado fuera de rango permitido.", "REVISAR VALOR ASEGURADO"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.note, func(t *testing.T) {
+			tags := etiquetasResumenFromNote(validationnotes.Incidencia(tc.note))
+			if len(tags) != 1 || tags[0] != tc.want {
+				t.Fatalf("want [%s], got %v", tc.want, tags)
+			}
+		})
+	}
+}
+
+func TestEtiquetasResumenFromNote_primaDiscrepanciaPlan(t *testing.T) {
+	cases := []struct {
+		note string
+		want string
+	}{
+		{"La prima (8000) no coincide con el plan «PLAN 1» como prima mensual ni como total del plazo dividido entre meses; primas mensuales permitidas: 8600.", "REVISAR PRIMA (PLAN)"},
+		{"La prima mensual es obligatoria para validar el plan «PLAN 1».", "REVISAR PRIMA (PLAN)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.note, func(t *testing.T) {
+			tags := etiquetasResumenFromNote(validationnotes.Incidencia(tc.note))
+			if len(tags) != 1 || tags[0] != tc.want {
+				t.Fatalf("want [%s], got %v", tc.want, tags)
+			}
+		})
+	}
+}
+
+func TestEtiquetasResumenFromNote_defaultGenericoSoloSinCampo(t *testing.T) {
+	tags := etiquetasResumenFromNote(validationnotes.Incidencia("Situación no clasificada en la fila."))
+	if len(tags) != 1 || tags[0] != "REVISAR" {
+		t.Fatalf("want [REVISAR] fallback, got %v", tags)
+	}
+}

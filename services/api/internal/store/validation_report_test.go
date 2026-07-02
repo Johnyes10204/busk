@@ -11,7 +11,7 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
-func TestValidationReport_InformativeSeparateFromIncidencias(t *testing.T) {
+func TestValidationReport_ClientXLSXUnicaHojaDatosArchivo(t *testing.T) {
 	policies := []model.PolicyRecord{{
 		RowNumber:      10,
 		DocumentNumber: "123",
@@ -35,16 +35,16 @@ func TestValidationReport_InformativeSeparateFromIncidencias(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = f.Close() }()
-	incRows, _ := f.GetRows("Incidencias")
-	if len(incRows) != 1 {
-		t.Fatalf("hoja Incidencias debe tener solo encabezado, got %d filas", len(incRows))
+	sheets := f.GetSheetList()
+	if len(sheets) != 1 || sheets[0] != "Datos archivo" {
+		t.Fatalf("se espera una sola hoja «Datos archivo», got %v", sheets)
 	}
-	infoRows, _ := f.GetRows("Informes")
-	if len(infoRows) < 2 {
-		t.Fatalf("hoja Informes debe tener datos, got %d filas", len(infoRows))
+	rows, _ := f.GetRows("Datos archivo")
+	if len(rows) < 2 {
+		t.Fatalf("Datos archivo debe tener encabezado + fila informativa, got %d", len(rows))
 	}
-	if infoRows[1][0] != "Informe informativo" {
-		t.Fatalf("tipo registro: %q", infoRows[1][0])
+	if !strings.Contains(rows[1][len(rows[1])-1], "vencimiento") {
+		t.Fatalf("novedades debe contener la informativa: %q", rows[1][len(rows[1])-1])
 	}
 }
 
@@ -163,7 +163,7 @@ func TestValidationReport_PolizaCongeladaEnInformes(t *testing.T) {
 	}
 }
 
-func TestValidationReport_MirrorSoloFilasConFallo(t *testing.T) {
+func TestValidationReport_MirrorIncluyeTodasLasFilas(t *testing.T) {
 	colOrder, _ := json.Marshal([]string{"IDENTIFICACION"})
 	rawFrozen, _ := json.Marshal(map[string]string{
 		"_excel_column_order": string(colOrder),
@@ -172,6 +172,14 @@ func TestValidationReport_MirrorSoloFilasConFallo(t *testing.T) {
 	rawInfo, _ := json.Marshal(map[string]string{
 		"_excel_column_order": string(colOrder),
 		"IDENTIFICACION":      "222",
+	})
+	rawLimpia, _ := json.Marshal(map[string]string{
+		"_excel_column_order": string(colOrder),
+		"IDENTIFICACION":      "333",
+	})
+	rawCancelada, _ := json.Marshal(map[string]string{
+		"_excel_column_order": string(colOrder),
+		"IDENTIFICACION":      "444",
 	})
 	policies := []model.PolicyRecord{
 		{
@@ -186,10 +194,45 @@ func TestValidationReport_MirrorSoloFilasConFallo(t *testing.T) {
 			ValidationJSON: `["` + validationnotes.Informativo("vencimiento anterior al mes de facturación") + `"]`,
 			RawDataJSON:    string(rawInfo),
 		},
+		{
+			RowNumber:    10,
+			PolicyStatus: "ACTIVE",
+			RawDataJSON:  string(rawLimpia),
+		},
+		{
+			RowNumber:    12,
+			PolicyStatus: "CANCELLED",
+			RawDataJSON:  string(rawCancelada),
+		},
 	}
-	report := BuildFileValidationReportFromPolicies("f1", "MICRO_BANCO_ABRIL.xlsx", "bolivar_inclusion_deudores_banco", "ERROR", "", "", policies)
-	if len(report.ExportedRows) != 0 {
-		t.Fatalf("solo informativas/congeladas no deben ir a Datos archivo: exported=%d", len(report.ExportedRows))
+	report := BuildFileValidationReportFromPolicies("f1", "MICRO_BANCO_ABRIL.xlsx", "bolivar_inclusion_deudores_banco", "PROCESSED", "", "", policies)
+	if len(report.ExportedRows) != 4 {
+		t.Fatalf("espejo debe incluir las 4 filas del archivo: exported=%d", len(report.ExportedRows))
+	}
+	if len(report.EmailExportedRows) != 4 {
+		t.Fatalf("adjunto de correo debe incluir las 4 filas: email_exported=%d", len(report.EmailExportedRows))
+	}
+	byRow := map[int]FileExportedRow{}
+	for _, r := range report.ExportedRows {
+		byRow[r.RowNumber] = r
+	}
+	if obs := byRow[10].Observaciones; obs != "Sin novedad" {
+		t.Fatalf("fila limpia debe tener 'Sin novedad', got %q", obs)
+	}
+	if nov := byRow[10].Novedades; nov != "" {
+		t.Fatalf("fila limpia no debe tener novedades, got %q", nov)
+	}
+	if obs := byRow[12].Observaciones; obs != "Póliza cancelada" {
+		t.Fatalf("fila cancelada debe tener 'Póliza cancelada', got %q", obs)
+	}
+	if nov := byRow[12].Novedades; nov != "" {
+		t.Fatalf("fila cancelada no debe tener novedades, got %q", nov)
+	}
+	if byRow[5].Observaciones == "" || byRow[5].Novedades == "" {
+		t.Fatalf("fila congelada debe conservar observaciones y novedades: %+v", byRow[5])
+	}
+	if byRow[8].Observaciones == "" || byRow[8].Novedades == "" {
+		t.Fatalf("fila con aviso debe conservar observaciones y novedades: %+v", byRow[8])
 	}
 }
 
