@@ -617,6 +617,7 @@ func validateFile(r io.Reader, fileID, fileName string, candidates []model.Produ
 	ruleCfg := svc.buildRuleRuntimeConfig(p)
 	hasFreezeOnZeroPolicy := productFreezesOnZeroPremium(p.Code, p.Rules)
 	inFileCreditCounts := make(map[string]int)
+	inFileCreditRows := make(map[string][]int)
 	inFileDuplicateCreditKeys := 0
 	inFileDuplicateRows := 0
 	if creditCol, ok := fieldToCol["credit_number"]; ok {
@@ -630,7 +631,9 @@ func validateFile(r io.Reader, fileID, fileName string, candidates []model.Produ
 			if credit == "" {
 				continue
 			}
-			inFileCreditCounts[codeKeyPrefix+credit]++
+			key := codeKeyPrefix + credit
+			inFileCreditCounts[key]++
+			inFileCreditRows[key] = append(inFileCreditRows[key], i+1)
 		}
 		for _, c := range inFileCreditCounts {
 			if c > 1 {
@@ -742,8 +745,7 @@ func validateFile(r io.Reader, fileID, fileName string, candidates []model.Produ
 			values,
 			seenCredits,
 			inFileCreditCounts,
-			inFileDuplicateCreditKeys,
-			inFileDuplicateRows,
+			inFileCreditRows,
 			ruleCfg,
 			svc,
 		)
@@ -1355,8 +1357,7 @@ func applyDiagramRules(
 	values map[string]string,
 	seenCredits map[string]struct{},
 	inFileCreditCounts map[string]int,
-	inFileDuplicateCreditKeys int,
-	inFileDuplicateRows int,
+	inFileCreditRows map[string][]int,
 	cfg ruleRuntimeConfig,
 	svc *Service,
 ) (hardViolations []string, softNotes []string) {
@@ -1373,7 +1374,7 @@ func applyDiagramRules(
 					repeats = 2
 				}
 				hardViolations = append(hardViolations, mensajeCreditoDuplicadoEnArchivo(
-					credit, repeats, inFileDuplicateCreditKeys, inFileDuplicateRows,
+					credit, repeats, joinIntsForNote(inFileCreditRows[key]),
 				))
 			} else {
 				seenCredits[key] = struct{}{}
@@ -1405,7 +1406,7 @@ func applyDiagramRules(
 				repeats = 2
 			}
 			hardViolations = append(hardViolations, mensajeCreditoDuplicadoEnArchivo(
-				credit, repeats, inFileDuplicateCreditKeys, inFileDuplicateRows,
+				credit, repeats, joinIntsForNote(inFileCreditRows[key]),
 			))
 		} else {
 			seenCredits[key] = struct{}{}

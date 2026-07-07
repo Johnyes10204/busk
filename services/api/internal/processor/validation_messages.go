@@ -298,10 +298,11 @@ func mensajeEdadFueraDeRango(code string, d edadValidacionDetalle, ageMin, ageMa
 }
 
 
-func mensajeCreditoDuplicadoEnArchivo(credit string, repeats, dupCredits, dupRows int) string {
-	_ = dupCredits
-	_ = dupRows
-	return fmt.Sprintf("OP BT DUPLICADO EN ARCHIVO: %s (%d VECES)", credit, repeats)
+func mensajeCreditoDuplicadoEnArchivo(credit string, repeats int, filas string) string {
+	if strings.TrimSpace(filas) == "" {
+		return fmt.Sprintf("OP BT DUPLICADO EN ARCHIVO: OP BT %s APARECE %d VECES", credit, repeats)
+	}
+	return fmt.Sprintf("OP BT DUPLICADO EN ARCHIVO: OP BT %s APARECE %d VECES (FILAS %s)", credit, repeats, filas)
 }
 
 func mensajeCreditoDuplicadoHistorico() string {
@@ -309,7 +310,7 @@ func mensajeCreditoDuplicadoHistorico() string {
 }
 
 func mensajeCreditoDuplicadoEnArchivoPorFila(credit, filas string) string {
-	return fmt.Sprintf("OP BT DUPLICADO: %s (FILAS %s)", credit, filas)
+	return fmt.Sprintf("OP BT DUPLICADO EN ARCHIVO: OP BT %s (FILAS %s)", credit, filas)
 }
 
 func mensajeVencimientoMesPasado(mesMinimoAnio, mesMinimo int) string {
@@ -640,7 +641,8 @@ func mensajePolizaCongeladaPrimaCero() string {
 }
 
 func mensajeResumenCreditoDuplicadoArchivo(cred string, count int, filasTodas, filasDup string) string {
-	return fmt.Sprintf("OP BT DUPLICADO: %s (%d VECES, FILAS %s)", cred, count, filasTodas)
+	_ = filasDup
+	return fmt.Sprintf("OP BT DUPLICADO: OP BT %s APARECE %d VECES (FILAS %s)", cred, count, filasTodas)
 }
 
 func formatoMontoNegocio(n float64) string {

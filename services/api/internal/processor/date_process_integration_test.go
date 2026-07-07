@@ -49,7 +49,7 @@ func TestProcessRealRows_NoFechaInvalida_BolivarPyme(t *testing.T) {
 		values := rowToValues(header, row, fieldToCol)
 		values["_file_name"] = "Pyme_BANCO_ABRIL.xlsx"
 		values["product_id"] = "bolivar_inclusion_deudores_banco"
-		hard, _ := applyDiagramRules("BOLIVAR_INCLUSION_DEUDORES_BANCO", values, seen, nil, 0, 0, cfg, nil)
+		hard, _ := applyDiagramRules("BOLIVAR_INCLUSION_DEUDORES_BANCO", values, seen, nil, nil, cfg, nil)
 		for _, h := range hard {
 			u := strings.ToUpper(h)
 			if strings.Contains(u, "FECHA NO VÁLIDA") || strings.Contains(u, "FECHA ACTIVACIÓN NO VÁLIDA") || strings.Contains(u, "FECHA NACIMIENTO NO VÁLIDA") {

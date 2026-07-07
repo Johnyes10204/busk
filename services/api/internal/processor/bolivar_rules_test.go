@@ -146,7 +146,7 @@ func TestBolivarApplyDiagramRules_SinIncidenciaEdadSiUnaInterpretacionValida(t *
 		"loan_award_date": "02-06-25",
 	}
 	seen := make(map[string]struct{})
-	hard, _ := applyDiagramRules("BOLIVAR_INCLUSION_DEUDORES_BANCO", values, seen, nil, 0, 0, cfg, &Service{})
+	hard, _ := applyDiagramRules("BOLIVAR_INCLUSION_DEUDORES_BANCO", values, seen, nil, nil, cfg, &Service{})
 	for _, h := range hard {
 		if strings.Contains(strings.ToLower(h), "edad") || strings.Contains(strings.ToLower(h), "rango permitido") {
 			t.Fatalf("no debe registrar incidencia de edad si una lectura cumple: %v", hard)
