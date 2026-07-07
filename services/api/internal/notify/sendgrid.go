@@ -78,13 +78,31 @@ func NewErrorNotifierFromEnv() FileNotifier {
 }
 
 func (n *sendGridNotifier) NotifyFileProcessing(input FileEmailInput) error {
+	// Invariante: todo archivo procesado (PROCESSED/ERROR/SKIPPED) debe generar un correo con
+	// al menos un adjunto (archivo original, reporte de novedades o resumen mínimo).
 	switch strings.ToUpper(strings.TrimSpace(input.Status)) {
 	case "PROCESSED":
 		return n.notifyProcessedSuccess(input)
-	case "ERROR":
+	case "ERROR", "SKIPPED":
 		return n.notifyProcessingError(input)
 	default:
 		return nil
+	}
+}
+
+// summaryFallbackAttachment genera un adjunto XLSX mínimo con el metadato del archivo. Nunca
+// devuelve nil salvo que el generador de XLSX del store falle catastróficamente. Se usa como
+// última red de seguridad para respetar la invariante "todo correo lleva adjunto".
+func (n *sendGridNotifier) summaryFallbackAttachment(input FileEmailInput) *emailAttachment {
+	b, err := store.ValidationReportXLSXForErrorEmail(input.FileName, input.FileID, input.ProductID, input.ErrorReason)
+	if err != nil || len(b) == 0 {
+		log.Printf("[notify] no se pudo generar resumen mínimo file_id=%s err=%v", input.FileID, err)
+		return nil
+	}
+	return &emailAttachment{
+		data:     b,
+		filename: validationReportAttachmentFilename(input.FileName, input.FileID, ".xlsx"),
+		mime:     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 	}
 }
 
@@ -143,7 +161,19 @@ func (n *sendGridNotifier) notifyProcessedSuccess(input FileEmailInput) error {
 		}
 	}
 
-	log.Printf("[notify] reintentando correo de éxito sin adjunto file_id=%s", input.FileID)
+	// Invariante "todo correo con adjunto": antes de mandar sin nada, intentar con el resumen
+	// mínimo (metadatos del archivo). Solo si eso también falla, mandar sin adjunto y devolver
+	// error para que el operador vea el problema.
+	if att := n.summaryFallbackAttachment(input); att != nil {
+		log.Printf("[notify] reintentando correo de éxito con resumen mínimo file_id=%s", input.FileID)
+		if ok, _, _, err := trySend([]emailAttachment{*att}); err != nil {
+			return err
+		} else if ok {
+			return nil
+		}
+	}
+
+	log.Printf("[notify] ADVERTENCIA: reintentando correo de éxito SIN adjunto file_id=%s", input.FileID)
 	status2, body2, err2 := send(nil)
 	if err2 != nil {
 		return err2
@@ -218,10 +248,29 @@ func (n *sendGridNotifier) notifyProcessingError(input FileEmailInput) error {
 			xlsxBytes = b
 		}
 	}
+
+	// Además del reporte de novedades, se adjunta el archivo original tal como llegó,
+	// para que el operador pueda revisarlo directamente sin descargar del panel.
+	var originalAtt *emailAttachment
+	if path := strings.TrimSpace(input.ArchivePath); path != "" {
+		if originalBytes, err := os.ReadFile(path); err != nil {
+			log.Printf("[notify] no se pudo leer archivo archivado file_id=%s path=%q err=%v — correo saldrá sin el archivo original",
+				input.FileID, path, err)
+		} else if len(originalBytes) > 0 {
+			cands := originalFileAttachmentCandidates(input.FileName, originalBytes)
+			if len(cands) > 0 {
+				att := cands[0]
+				originalAtt = &att
+			}
+		}
+	} else {
+		log.Printf("[notify] ERROR sin archive_path file_id=%s — correo saldrá sin el archivo original", input.FileID)
+	}
+
 	downloadURL := validationReportDownloadURL(input.FileID)
 
-	send := func(attach *emailAttachment, bodyMentionsReport bool) (statusCode int, body string, err error) {
-		msg := n.composeErrorMail(input, attach, bodyMentionsReport, downloadURL)
+	send := func(attachments []emailAttachment, bodyMentionsReport bool) (statusCode int, body string, err error) {
+		msg := n.composeErrorMail(input, attachments, bodyMentionsReport, downloadURL)
 		r, e := client.Send(msg)
 		if e != nil {
 			return 0, "", e
@@ -229,33 +278,68 @@ func (n *sendGridNotifier) notifyProcessingError(input FileEmailInput) error {
 		return r.StatusCode, r.Body, nil
 	}
 
-	tryAttach := func(att emailAttachment, label string) (ok bool, status int, body string, err error) {
-		if len(att.data) == 0 {
+	trySend := func(attachments []emailAttachment, label string) (ok bool, status int, body string, err error) {
+		total := 0
+		for _, a := range attachments {
+			total += len(a.data)
+		}
+		if total == 0 {
 			return false, 0, "", nil
 		}
-		if len(att.data) > maxEmailAttachmentBytes {
-			log.Printf("[notify] adjunto %s demasiado grande file_id=%s bytes=%d max=%d", label, input.FileID, len(att.data), maxEmailAttachmentBytes)
+		if total > maxEmailAttachmentBytes {
+			log.Printf("[notify] adjuntos %s demasiado grandes file_id=%s bytes=%d max=%d",
+				label, input.FileID, total, maxEmailAttachmentBytes)
 			return false, 0, "", nil
 		}
-		st, b, e := send(&att, true)
+		st, b, e := send(attachments, true)
 		if e != nil {
 			return false, st, b, e
 		}
 		if st >= 200 && st < 300 {
-			log.Printf("[notify] sendgrid aceptó adjunto %s file_id=%s status=%d bytes=%d destinatarios=%d",
-				label, input.FileID, st, len(att.data), len(n.recipients))
+			log.Printf("[notify] sendgrid aceptó %s file_id=%s status=%d bytes=%d adjuntos=%d destinatarios=%d",
+				label, input.FileID, st, total, len(attachments), len(n.recipients))
 			return true, st, b, nil
 		}
 		return false, st, b, nil
 	}
 
+	// Estrategia de reintentos:
+	//  1) reporte + archivo original (lo ideal para el operador)
+	//  2) solo reporte (novedades primero — la información crítica)
+	//  3) solo archivo original (por si el reporte falla)
+	//  4) reporte en ZIP (por 413 de nginx)
+	//  5) correo sin adjunto + URL de descarga
 	if len(xlsxBytes) > 0 {
-		for _, att := range emailAttachmentCandidates(input.FileName, input.FileID, xlsxBytes) {
-			label := "xlsx"
-			if strings.HasSuffix(strings.ToLower(att.filename), ".zip") {
-				label = "zip"
+		reportCands := emailAttachmentCandidates(input.FileName, input.FileID, xlsxBytes)
+		var xlsxAtt emailAttachment
+		if len(reportCands) > 0 {
+			xlsxAtt = reportCands[0]
+		}
+
+		if len(xlsxAtt.data) > 0 && originalAtt != nil {
+			combined := []emailAttachment{xlsxAtt, *originalAtt}
+			ok, st, body, err := trySend(combined, "reporte+original")
+			if err != nil {
+				return err
 			}
-			ok, st, body, err := tryAttach(att, label)
+			if ok {
+				return nil
+			}
+			if st == 413 {
+				log.Printf("[notify] sendgrid 413 con reporte+original; reintento solo reporte file_id=%s body=%s",
+					input.FileID, truncateForLog(body, 400))
+			} else if st != 0 {
+				log.Printf("[notify] sendgrid rechazó reporte+original file_id=%s status=%d body=%s",
+					input.FileID, st, truncateForLog(body, 1800))
+			}
+		}
+
+		for _, att := range reportCands {
+			label := "reporte-xlsx"
+			if strings.HasSuffix(strings.ToLower(att.filename), ".zip") {
+				label = "reporte-zip"
+			}
+			ok, st, body, err := trySend([]emailAttachment{att}, label)
 			if err != nil {
 				return err
 			}
@@ -274,11 +358,38 @@ func (n *sendGridNotifier) notifyProcessingError(input FileEmailInput) error {
 		}
 	}
 
-	if len(xlsxBytes) > 0 {
-		log.Printf("[notify] ADVERTENCIA: no se pudo adjuntar Excel file_id=%s bytes=%d; reintento correo sin adjunto", input.FileID, len(xlsxBytes))
+	if originalAtt != nil {
+		ok, st, body, err := trySend([]emailAttachment{*originalAtt}, "solo-original")
+		if err != nil {
+			return err
+		}
+		if ok {
+			return nil
+		}
+		if st == 413 {
+			log.Printf("[notify] sendgrid 413 con solo-original; reintento sin adjunto file_id=%s body=%s",
+				input.FileID, truncateForLog(body, 400))
+		} else if st != 0 {
+			log.Printf("[notify] sendgrid rechazó solo-original file_id=%s status=%d body=%s",
+				input.FileID, st, truncateForLog(body, 1800))
+		}
 	}
 
-	log.Printf("[notify] reintentando sin adjunto file_id=%s", input.FileID)
+	if len(xlsxBytes) > 0 {
+		log.Printf("[notify] ADVERTENCIA: no se pudo adjuntar Excel file_id=%s bytes=%d; intento resumen mínimo", input.FileID, len(xlsxBytes))
+	}
+
+	// Invariante "todo correo con adjunto": antes de mandar sin nada, intentar con el resumen
+	// mínimo (metadatos del archivo). Solo si eso también falla, mandar sin adjunto.
+	if att := n.summaryFallbackAttachment(input); att != nil {
+		if ok, _, _, err := trySend([]emailAttachment{*att}, "resumen-minimo"); err != nil {
+			return err
+		} else if ok {
+			return nil
+		}
+	}
+
+	log.Printf("[notify] ADVERTENCIA: reintentando SIN adjunto file_id=%s", input.FileID)
 	status2, body2, err2 := send(nil, len(xlsxBytes) > 0)
 	if err2 != nil {
 		return err2
@@ -375,9 +486,12 @@ func truncateForLog(s string, max int) string {
 	return s[:max] + "…"
 }
 
-func (n *sendGridNotifier) composeErrorMail(input FileEmailInput, attach *emailAttachment, bodyMentionsReport bool, downloadURL string) *sgmail.SGMailV3 {
+func (n *sendGridNotifier) composeErrorMail(input FileEmailInput, attachments []emailAttachment, bodyMentionsReport bool, downloadURL string) *sgmail.SGMailV3 {
 	from := sgmail.NewEmail("Busk Seguros", n.from)
 	subject := fmt.Sprintf("[Busk Seguros] Novedades en archivo %s", strings.TrimSpace(input.FileName))
+	if strings.EqualFold(strings.TrimSpace(input.Status), "SKIPPED") {
+		subject = fmt.Sprintf("[Busk Seguros] Archivo omitido: %s", strings.TrimSpace(input.FileName))
+	}
 
 	message := sgmail.NewV3Mail()
 	message.SetFrom(from)
@@ -388,16 +502,20 @@ func (n *sendGridNotifier) composeErrorMail(input FileEmailInput, attach *emailA
 	}
 	message.AddPersonalizations(p)
 
-	if attach != nil && len(attach.data) > 0 {
+	adjunto := false
+	for _, attach := range attachments {
+		if len(attach.data) == 0 {
+			continue
+		}
 		att := sgmail.NewAttachment()
 		att.SetContent(base64.StdEncoding.EncodeToString(attach.data))
 		att.SetType(attach.mime)
 		att.SetFilename(attach.filename)
 		att.SetDisposition("attachment")
 		message.AddAttachment(att)
+		adjunto = true
 	}
 
-	adjunto := attach != nil && len(attach.data) > 0
 	plainText := buildPlainBody(input, adjunto, bodyMentionsReport, downloadURL)
 	htmlBody := buildHTMLBody(input, adjunto, bodyMentionsReport, downloadURL)
 	message.AddContent(sgmail.NewContent("text/plain", plainText))

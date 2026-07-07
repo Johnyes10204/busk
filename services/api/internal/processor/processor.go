@@ -58,21 +58,21 @@ type ProgressInfo struct {
 var errDuplicateFileHash = errors.New("duplicate file hash already processed")
 
 type ruleRuntimeConfig struct {
-	DateLayouts                []string
-	MapfreCancelKeywords       []string
-	RequiredValidDateFields    []string
-	AllowedPremiums            []float64
-	AgeMin                     float64
-	AgeMax                     float64
-	HasAgeLimits               bool
-	BolivarDebtManualThreshold  float64
-	BolivarPrimaCalcTolerance   float64
-	BolivarPlazoDiasTolerance        int
-	BolivarDueReferenceMonthOffset   int  // mes mínimo vs calendario: -1 = mes vencido (en mayo se carga abril)
-	BolivarValidateDueMonth          bool // E.10: vencimiento < mes facturación → revisar prima; prima 0 → cancelación sin incidencia por fecha
-	MapfreRequireCurrentMonth    bool
-	MapfreDateToleranceDays      int // tolerancia vigencias (plazo); no confundir con edad
-	AgeMaxDaysBeforeBirthday     int // días antes del cumpleaños tope (75.997 → 1 = hasta el día anterior al 76)
+	DateLayouts                    []string
+	MapfreCancelKeywords           []string
+	RequiredValidDateFields        []string
+	AllowedPremiums                []float64
+	AgeMin                         float64
+	AgeMax                         float64
+	HasAgeLimits                   bool
+	BolivarDebtManualThreshold     float64
+	BolivarPrimaCalcTolerance      float64
+	BolivarPlazoDiasTolerance      int
+	BolivarDueReferenceMonthOffset int  // mes mínimo vs calendario: -1 = mes vencido (en mayo se carga abril)
+	BolivarValidateDueMonth        bool // E.10: vencimiento < mes facturación → revisar prima; prima 0 → cancelación sin incidencia por fecha
+	MapfreRequireCurrentMonth      bool
+	MapfreDateToleranceDays        int // tolerancia vigencias (plazo); no confundir con edad
+	AgeMaxDaysBeforeBirthday       int // días antes del cumpleaños tope (75.997 → 1 = hasta el día anterior al 76)
 }
 
 func New(st *store.Store) *Service {
@@ -162,7 +162,9 @@ func (s *Service) runJob(workerID int, job queuedJob) {
 }
 
 func (s *Service) notifyFileProcessing(rec model.FileProcessRecord) {
-	if rec.Status != model.FileStatusProcessed && rec.Status != model.FileStatusError {
+	// Invariante: todo archivo que llegó a estado terminal debe generar un correo con adjunto.
+	// PROCESSED/ERROR/SKIPPED reciben notificación; PENDING/QUEUED/PROCESSING nunca llegan aquí.
+	if rec.Status != model.FileStatusProcessed && rec.Status != model.FileStatusError && rec.Status != model.FileStatusSkipped {
 		return
 	}
 	err := s.notifier.NotifyFileProcessing(notify.FileEmailInput{
@@ -182,10 +184,13 @@ func (s *Service) notifyFileProcessing(rec model.FileProcessRecord) {
 		}
 		return
 	}
-	if rec.Status == model.FileStatusProcessed {
+	switch rec.Status {
+	case model.FileStatusProcessed:
 		log.Printf("[notify] correo de éxito enviado file_id=%s", rec.ID)
-	} else {
+	case model.FileStatusError:
 		log.Printf("[notify] correo de error enviado file_id=%s", rec.ID)
+	case model.FileStatusSkipped:
+		log.Printf("[notify] correo de omisión enviado file_id=%s", rec.ID)
 	}
 }
 
@@ -1015,17 +1020,17 @@ func buildArchivePath(fileID, fileName string) (string, error) {
 
 func (s *Service) buildRuleRuntimeConfig(p model.Product) ruleRuntimeConfig {
 	cfg := ruleRuntimeConfig{
-		DateLayouts:                defaultDateLayouts(),
-		MapfreCancelKeywords:       []string{"ANUL", "TERMINAD", "SINIEST"},
-		RequiredValidDateFields:    []string{},
-		AllowedPremiums:            s.store.GetAllowedPremiums(p.ID),
-		BolivarDebtManualThreshold: 20000000,
-		BolivarPrimaCalcTolerance:  1.0,
-		BolivarPlazoDiasTolerance:        5,
-		BolivarDueReferenceMonthOffset:   -1,
-		BolivarValidateDueMonth:          true,
-		MapfreRequireCurrentMonth:  true,
-		MapfreDateToleranceDays:    2,
+		DateLayouts:                    defaultDateLayouts(),
+		MapfreCancelKeywords:           []string{"ANUL", "TERMINAD", "SINIEST"},
+		RequiredValidDateFields:        []string{},
+		AllowedPremiums:                s.store.GetAllowedPremiums(p.ID),
+		BolivarDebtManualThreshold:     20000000,
+		BolivarPrimaCalcTolerance:      1.0,
+		BolivarPlazoDiasTolerance:      5,
+		BolivarDueReferenceMonthOffset: -1,
+		BolivarValidateDueMonth:        true,
+		MapfreRequireCurrentMonth:      true,
+		MapfreDateToleranceDays:        2,
 	}
 	if v, ok := s.store.GetGlobalRuleParam("date_layouts_csv"); ok {
 		layouts := splitCSV(v)
@@ -2030,14 +2035,19 @@ func codeToProductID(code string) string {
 	}
 }
 
+// processorWorkersFromEnv resuelve la cantidad de workers concurrentes del pipeline.
+// Cada worker procesa un archivo a la vez y no toma el siguiente hasta dejarlo en estado
+// terminal (PROCESSED/ERROR/SKIPPED). El default de 4 balancea paralelismo real vs. carga
+// contra SFTP y MySQL; PROCESSOR_WORKERS permite subir o bajar (cap 8).
 func processorWorkersFromEnv() int {
+	const defaultWorkers = 1
 	raw := strings.TrimSpace(os.Getenv("PROCESSOR_WORKERS"))
 	if raw == "" {
-		return 2
+		return defaultWorkers
 	}
 	n, err := strconv.Atoi(raw)
 	if err != nil || n < 1 {
-		return 2
+		return defaultWorkers
 	}
 	if n > 8 {
 		return 8

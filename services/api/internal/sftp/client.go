@@ -23,9 +23,10 @@ type Config struct {
 }
 
 type Client struct {
-	raw     *sftp.Client
-	conn    *ssh.Client
-	baseDir string
+	raw           *sftp.Client
+	conn          *ssh.Client
+	baseDir       string
+	keepaliveStop chan struct{}
 }
 
 func NewFromEnv() (Config, error) {
@@ -54,12 +55,29 @@ func Connect(cfg Config) (*Client, error) {
 		Timeout:         30 * time.Second,
 	}
 	addr := net.JoinHostPort(cfg.Host, cfg.Port)
-	conn, err := ssh.Dial("tcp", addr, sshCfg)
+
+	// Dial TCP nosotros para activar keepalive del OS. Sin esto, si el peer muere silenciosamente
+	// (cable, corte, servidor cae), lecturas SFTP posteriores bloquean por horas (~2h default de
+	// keepalive del kernel Linux) y el worker queda colgado sin panicar.
+	netConn, err := net.DialTimeout("tcp", addr, 30*time.Second)
 	if err != nil {
-		log.Printf("[sftp] error en ssh dial addr=%s err=%v", addr, err)
-		return nil, fmt.Errorf("ssh dial %s: %w", addr, err)
+		log.Printf("[sftp] error en tcp dial addr=%s err=%v", addr, err)
+		return nil, fmt.Errorf("tcp dial %s: %w", addr, err)
 	}
+	if tcp, ok := netConn.(*net.TCPConn); ok {
+		_ = tcp.SetKeepAlive(true)
+		_ = tcp.SetKeepAlivePeriod(30 * time.Second)
+	}
+
+	sshClientConn, chans, reqs, err := ssh.NewClientConn(netConn, addr, sshCfg)
+	if err != nil {
+		_ = netConn.Close()
+		log.Printf("[sftp] error en ssh handshake addr=%s err=%v", addr, err)
+		return nil, fmt.Errorf("ssh handshake %s: %w", addr, err)
+	}
+	conn := ssh.NewClient(sshClientConn, chans, reqs)
 	log.Printf("[sftp] conexión SSH establecida addr=%s", addr)
+
 	raw, err := sftp.NewClient(conn)
 	if err != nil {
 		_ = conn.Close()
@@ -67,10 +85,53 @@ func Connect(cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("sftp new client: %w", err)
 	}
 	log.Printf("[sftp] cliente SFTP listo addr=%s", addr)
-	return &Client{raw: raw, conn: conn, baseDir: cfg.RemoteDir}, nil
+
+	// Keepalive SSH periódico: si el peer no responde en ~30 s dos veces seguidas, cerramos la
+	// conexión para que cualquier I/O bloqueado (io.Copy, Open, ReadDir) devuelva error en vez
+	// de esperar indefinido.
+	stop := make(chan struct{})
+	go sshKeepalive(conn, addr, stop)
+
+	return &Client{raw: raw, conn: conn, baseDir: cfg.RemoteDir, keepaliveStop: stop}, nil
+}
+
+// sshKeepalive envía requests keepalive@openssh.com cada 30 s. Si dos consecutivos fallan,
+// cierra la conexión para desbloquear cualquier operación SFTP colgada. Termina cuando el
+// consumidor cierra el canal stop (típicamente desde Close).
+func sshKeepalive(conn *ssh.Client, addr string, stop <-chan struct{}) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	misses := 0
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			_, _, err := conn.SendRequest("keepalive@openssh.com", true, nil)
+			if err == nil {
+				misses = 0
+				continue
+			}
+			misses++
+			log.Printf("[sftp] keepalive fallo addr=%s misses=%d err=%v", addr, misses, err)
+			if misses >= 2 {
+				log.Printf("[sftp] keepalive: cerrando conexión colgada addr=%s", addr)
+				_ = conn.Close()
+				return
+			}
+		}
+	}
 }
 
 func (c *Client) Close() {
+	if c.keepaliveStop != nil {
+		select {
+		case <-c.keepaliveStop:
+			// ya cerrado
+		default:
+			close(c.keepaliveStop)
+		}
+	}
 	_ = c.raw.Close()
 	_ = c.conn.Close()
 }
