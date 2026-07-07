@@ -19,6 +19,8 @@ func TestSeedFilePrefixes_CoverageDownloads(t *testing.T) {
 		{"5. Deudores_ESAL_Bolivar_Pyme_ESAL_ABRIL.xlsx", prefixBolivarEsalPyme},
 		{"5. Deudores_ESAL_Bolivar_micro_ESAL_ABRIL.xlsx", prefixBolivarEsalMicro},
 		{"Anulacion masiva_ABRIL 2026.xlsx", prefixMapfreAnulacionMasiva},
+		{"Anulación masiva_ABRIL 2026.xlsx", prefixMapfreAnulacionMasivaTilde},
+		{"Anulación masiva_MAYO 2026.xlsx", prefixMapfreAnulacionMasivaTilde},
 		// Legado / otros lotes
 		{"INCLUSION-VIDA-MAPFRE.xlsx", prefixMapfreInclusionVida},
 		{"INCLUSION-ACCIDEMENOR-MAPFRE.xlsx", prefixMapfreInclusionAccMen},
@@ -42,6 +44,13 @@ func TestSeedFilePrefixes_NoCrossInsurer(t *testing.T) {
 	}
 	if filenameMatchesPrefix("5024524900101_ACC MEN RM-INCLUSION ABRIL2026.xlsx", contractMapfreCancer) {
 		t.Fatal("contrato ACC MEN no debe matchear contrato CANCER")
+	}
+	// Las dos escrituras de "Anulacion/Anulación" son literales distintos y no deben cruzarse.
+	if filenameMatchesPrefix("Anulación masiva_ABRIL 2026.xlsx", prefixMapfreAnulacionMasiva) {
+		t.Fatal("archivo con tilde no debe matchear el prefijo sin tilde")
+	}
+	if filenameMatchesPrefix("Anulacion masiva_ABRIL 2026.xlsx", prefixMapfreAnulacionMasivaTilde) {
+		t.Fatal("archivo sin tilde no debe matchear el prefijo con tilde")
 	}
 }
 

@@ -1083,33 +1083,138 @@ func readRowsWithExcelize(tmpPath, sheetName string) ([][]string, error) {
 	return rows, nil
 }
 
-// selectProductCandidateFromWorkbook prueba cada formato (prefijo ya filtrado) con su hoja Excel y encabezados.
+// selectProductCandidateFromWorkbook prueba cada formato contra todas las hojas del libro
+// y elige la mejor combinación por score de encabezados mapeados. Si el candidato define
+// SheetName y una hoja del libro coincide, se prioriza esa hoja en desempate.
 func selectProductCandidateFromWorkbook(tmpPath string, candidates []model.Product) (model.Product, []string, [][]string, error) {
+	sheets, err := readAllSheetsFromWorkbook(tmpPath)
+	if err != nil {
+		return model.Product{}, nil, nil, err
+	}
+	if len(sheets) == 0 {
+		return model.Product{}, nil, nil, fmt.Errorf("sin hojas en workbook")
+	}
+
 	bestScore := -1
+	bestSheetPreferred := false
 	var best model.Product
 	var bestHeader []string
 	var bestRows [][]string
+	var bestSheetName string
+
 	for _, c := range candidates {
-		rows, err := readWorkbookRows(tmpPath, c.SheetName)
-		if err != nil || len(rows) < c.HeaderRow || c.HeaderRow <= 0 {
+		if c.HeaderRow <= 0 {
 			continue
 		}
-		header := rows[c.HeaderRow-1]
-		if !hasAllRequiredHeaders(header, c.Mappings) {
-			continue
-		}
-		score := countMappedHeaders(header, c.Mappings)
-		if score > bestScore {
-			bestScore = score
-			best = c
-			bestHeader = header
-			bestRows = rows
+		for _, sh := range sheets {
+			if len(sh.rows) < c.HeaderRow {
+				continue
+			}
+			header := sh.rows[c.HeaderRow-1]
+			if !hasAllRequiredHeaders(header, c.Mappings) {
+				continue
+			}
+			score := countMappedHeaders(header, c.Mappings)
+			preferred := strings.TrimSpace(c.SheetName) != "" && strings.EqualFold(c.SheetName, sh.name)
+			if score > bestScore || (score == bestScore && preferred && !bestSheetPreferred) {
+				bestScore = score
+				bestSheetPreferred = preferred
+				best = c
+				bestHeader = header
+				bestRows = sh.rows
+				bestSheetName = sh.name
+			}
 		}
 	}
 	if bestScore < 0 {
 		return model.Product{}, nil, nil, fmt.Errorf("ningún formato coincide con encabezados requeridos del archivo")
 	}
+	log.Printf("[processor] hoja seleccionada file=%q producto=%q hoja=%q score=%d", filepath.Base(tmpPath), best.Code, bestSheetName, bestScore)
 	return best, bestHeader, bestRows, nil
+}
+
+type workbookSheet struct {
+	name string
+	rows [][]string
+}
+
+// readAllSheetsFromWorkbook devuelve todas las hojas del libro con sus filas, en el orden
+// declarado por el archivo. Prueba primero excelize (xlsx y algunos xls disfrazados) y cae
+// a xls legacy sólo si la extensión es .xls y excelize falla.
+func readAllSheetsFromWorkbook(tmpPath string) ([]workbookSheet, error) {
+	ext := strings.ToLower(filepath.Ext(tmpPath))
+	if ext == ".xlsx" || ext == ".xls" {
+		if sheets, err := readAllSheetsWithExcelize(tmpPath); err == nil {
+			return sheets, nil
+		}
+	}
+	if ext == ".xls" {
+		return readAllSheetsWithXLS(tmpPath)
+	}
+	return nil, fmt.Errorf("extensión no soportada: %s", ext)
+}
+
+func readAllSheetsWithExcelize(tmpPath string) ([]workbookSheet, error) {
+	f, err := excelize.OpenFile(tmpPath, excelize.Options{ShortDatePattern: "dd/mm/yyyy"})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+
+	names := f.GetSheetList()
+	if len(names) == 0 {
+		return nil, fmt.Errorf("sin hojas en workbook")
+	}
+	out := make([]workbookSheet, 0, len(names))
+	for _, name := range names {
+		rows, err := f.GetRows(name, excelize.Options{ShortDatePattern: "dd/mm/yyyy", RawCellValue: false})
+		if err != nil {
+			log.Printf("[processor] no se pudo leer hoja %q en %q: %v (se ignora)", name, filepath.Base(tmpPath), err)
+			continue
+		}
+		out = append(out, workbookSheet{name: name, rows: rows})
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("ninguna hoja legible en workbook")
+	}
+	return out, nil
+}
+
+func readAllSheetsWithXLS(tmpPath string) ([]workbookSheet, error) {
+	wb, err := xls.Open(tmpPath, "utf-8")
+	if err != nil {
+		return nil, fmt.Errorf("open xls: %w", err)
+	}
+	nSheets := wb.NumSheets()
+	if nSheets == 0 {
+		return nil, fmt.Errorf("sin hojas en xls")
+	}
+	out := make([]workbookSheet, 0, nSheets)
+	for idx := 0; idx < nSheets; idx++ {
+		sheet := wb.GetSheet(idx)
+		if sheet == nil {
+			continue
+		}
+		rows := make([][]string, 0, int(sheet.MaxRow)+1)
+		for i := 0; i <= int(sheet.MaxRow); i++ {
+			r := sheet.Row(i)
+			if r == nil {
+				rows = append(rows, []string{})
+				continue
+			}
+			cols := r.LastCol()
+			row := make([]string, cols)
+			for c := 0; c < cols; c++ {
+				row[c] = strings.TrimSpace(r.Col(c))
+			}
+			rows = append(rows, row)
+		}
+		out = append(out, workbookSheet{name: sheet.Name, rows: rows})
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("ninguna hoja legible en xls")
+	}
+	return out, nil
 }
 
 func readRowsWithXLS(tmpPath string) ([][]string, error) {

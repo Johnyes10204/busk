@@ -963,7 +963,8 @@ const (
 	prefixMapfreInclusionCancer    = "INCLUSION-CANCER"
 	prefixMapfreInclusionCancerVF  = "CANCER RM-INCLUSION"
 	prefixMapfreStock              = "STOCK_MAPFRE"
-	prefixMapfreAnulacionMasiva    = "Anulacion masiva" // cancelaciones MAPFRE (plantilla; no confundir con Anexo 4 Bolívar)
+	prefixMapfreAnulacionMasiva      = "Anulacion masiva" // cancelaciones MAPFRE (plantilla; no confundir con Anexo 4 Bolívar)
+	prefixMapfreAnulacionMasivaTilde = "Anulación masiva" // variante con tilde (algunos archivos MAPFRE la usan)
 
 	prefixBolivarBancoMicro = "MICRO_BANCO"  // Anexo 4 · Deudores_Banco_Bolivar_MICRO_BANCO_*
 	prefixBolivarBancoPyme  = "Pyme_BANCO"   // Anexo 4 · Deudores_Banco_Bolivar__Pyme_BANCO_*
@@ -1517,6 +1518,23 @@ func seed(st *store.Store) {
 		},
 	})
 
+	mapfreAnulacionMappings := []model.FieldMap{
+		{CanonicalField: "group_policy_number", SourceHeader: "NUMER PÓLIZA GRUPO", Required: false},
+		{CanonicalField: "policy_number", SourceHeader: "# PÓLIZA ACTUAL", Required: false},
+		{CanonicalField: "document_number", SourceHeader: "CEDULA CLIENTE", Required: true},
+		{CanonicalField: "credit_number", SourceHeader: "OPERACIÓN BANTOTAL", Required: true},
+		{CanonicalField: "cancellation_date", SourceHeader: "FEC_ANULA", Required: false},
+		{CanonicalField: "activation_date", SourceHeader: "FECHA DE ACTIVACIÓN", Required: true},
+		{CanonicalField: "coverage_end_date", SourceHeader: "FECHA PROYECTADA FIN DE VIGENCIA", Required: true},
+		{CanonicalField: "observacion", SourceHeader: "OBS", Required: false},
+	}
+	mapfreAnulacionRules := []model.RuleConfig{
+		{Type: "required_not_empty", Field: "document_number"},
+		{Type: "required_not_empty", Field: "credit_number"},
+		{Type: "required_not_empty", Field: "activation_date"},
+		{Type: "required_not_empty", Field: "coverage_end_date"},
+	}
+
 	st.UpsertProductFormat(model.ProductFormat{
 		ID:         "mapfre_anulacion_fmt_abril",
 		ProductID:  pidMapfreAnulacionMasiva,
@@ -1526,22 +1544,22 @@ func seed(st *store.Store) {
 		HeaderRow:  1,
 		Priority:   100,
 		Active:     true,
-		Mappings: []model.FieldMap{
-			{CanonicalField: "group_policy_number", SourceHeader: "NUMER PÓLIZA GRUPO", Required: false},
-			{CanonicalField: "policy_number", SourceHeader: "# PÓLIZA ACTUAL", Required: false},
-			{CanonicalField: "document_number", SourceHeader: "CEDULA CLIENTE", Required: true},
-			{CanonicalField: "credit_number", SourceHeader: "OPERACIÓN BANTOTAL", Required: true},
-			{CanonicalField: "cancellation_date", SourceHeader: "FEC_ANULA", Required: false},
-			{CanonicalField: "activation_date", SourceHeader: "FECHA DE ACTIVACIÓN", Required: true},
-			{CanonicalField: "coverage_end_date", SourceHeader: "FECHA PROYECTADA FIN DE VIGENCIA", Required: true},
-			{CanonicalField: "observacion", SourceHeader: "OBS", Required: false},
-		},
-		Rules: []model.RuleConfig{
-			{Type: "required_not_empty", Field: "document_number"},
-			{Type: "required_not_empty", Field: "credit_number"},
-			{Type: "required_not_empty", Field: "activation_date"},
-			{Type: "required_not_empty", Field: "coverage_end_date"},
-		},
+		Mappings:   mapfreAnulacionMappings,
+		Rules:      mapfreAnulacionRules,
+	})
+
+	// Variante con tilde: mismos mappings/rules, el selector de hoja resuelve la plantilla real.
+	st.UpsertProductFormat(model.ProductFormat{
+		ID:         "mapfre_anulacion_fmt_abril_tilde",
+		ProductID:  pidMapfreAnulacionMasiva,
+		Name:       "cancelaciones MAPFRE · plantilla anulaciones (con tilde)",
+		FilePrefix: prefixMapfreAnulacionMasivaTilde,
+		SheetName:  "Plantilla_Anulaciones Abril26",
+		HeaderRow:  1,
+		Priority:   100,
+		Active:     true,
+		Mappings:   mapfreAnulacionMappings,
+		Rules:      mapfreAnulacionRules,
 	})
 
 	st.UpsertProduct(model.Product{
