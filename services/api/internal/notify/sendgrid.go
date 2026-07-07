@@ -174,14 +174,16 @@ func (n *sendGridNotifier) processedSuccessAttachments(input FileEmailInput) ([]
 
 	archivePath := strings.TrimSpace(input.ArchivePath)
 	if archivePath == "" {
-		if !hasNovedades {
-			log.Printf("[notify] PROCESSED sin archive_path file_id=%s", input.FileID)
-		}
+		log.Printf("[notify] PROCESSED sin archive_path file_id=%s — correo saldrá sin el archivo original", input.FileID)
 		return out, hasNovedades, nil
 	}
 	originalBytes, err := os.ReadFile(archivePath)
 	if err != nil {
-		return out, hasNovedades, fmt.Errorf("leer archivo archivado: %w", err)
+		// El archivo local puede haberse perdido (cwd cambió, se movió, cleanup). No bloquear
+		// el correo por eso: enviarlo sin adjunto original y dejar constancia en el log.
+		log.Printf("[notify] no se pudo leer archivo archivado file_id=%s path=%q err=%v — correo saldrá sin el archivo original",
+			input.FileID, archivePath, err)
+		return out, hasNovedades, nil
 	}
 	if len(originalBytes) > 0 {
 		cands := originalFileAttachmentCandidates(input.FileName, originalBytes)

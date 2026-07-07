@@ -20,11 +20,15 @@ func reportsArchiveBaseDir() string {
 
 func buildReportArchivePath(fileID, fileName string) (string, error) {
 	baseDir := reportsArchiveBaseDir()
-	if err := os.MkdirAll(baseDir, 0o755); err != nil {
+	absBase, err := filepath.Abs(baseDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve reports archive dir: %w", err)
+	}
+	if err := os.MkdirAll(absBase, 0o755); err != nil {
 		return "", fmt.Errorf("mkdir reports archive dir: %w", err)
 	}
 	safeName := strings.ReplaceAll(fileName, string(filepath.Separator), "_")
-	return filepath.Join(baseDir, fmt.Sprintf("%s_%s.reporte.xlsx", fileID, safeName)), nil
+	return filepath.Join(absBase, fmt.Sprintf("%s_%s.reporte.xlsx", fileID, safeName)), nil
 }
 
 func saveValidationReportArchive(report store.FileValidationReport, fileID, fileName string) string {

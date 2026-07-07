@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -85,6 +86,14 @@ func New(st *store.Store) *Service {
 	}
 	log.Printf("[processor] inicializado workers=%d queue_capacity=%d", workers, cap(s.jobs))
 	log.Printf("[processor] PROCESSOR_READ_FULL_FILE_ON_ROW_ERRORS=%t", processorReadFullFileOnRowErrorsFromEnv())
+	// Antes de aceptar trabajo nuevo, se marcan como ERROR archivos que quedaron en estados
+	// transitorios (PROCESSING/QUEUED/PENDING) por una caída o reinicio previo. Así ninguna
+	// carga queda huérfana y el operador puede reintentar por la vía normal (ERROR → retry).
+	if n, err := st.MarkStaleFilesAsError(); err != nil {
+		log.Printf("[processor] recover_stale: no se pudo actualizar archivos huérfanos err=%v", err)
+	} else if n > 0 {
+		log.Printf("[processor] recover_stale: %d archivo(s) pasados a ERROR (interrumpidos en corrida anterior)", n)
+	}
 	s.startWorker()
 	return s
 }
@@ -96,25 +105,60 @@ func (s *Service) startWorker() {
 			go func(id int) {
 				log.Printf("[processor] worker_%d listo", id)
 				for job := range s.jobs {
-					log.Printf("[processor] worker_%d tomó file_id=%s file=%s", id, job.ID, job.FileName)
-					s.updateProgress(job.ID, job.FileName, "PROCESSING", 0, "iniciando procesamiento", "", "")
-					s.store.AddFileRecord(model.FileProcessRecord{
-						ID:          job.ID,
-						FileName:    job.FileName,
-						Status:      model.FileStatusProcessing,
-						RemotePath:  job.FileName,
-						ProcessedAt: time.Now().UTC(),
-					})
-					rec := s.processByName(job)
-					s.store.AddFileRecord(rec)
-					s.notifyFileProcessing(rec)
-					finalErr := rec.ErrorReason
-					s.updateProgress(job.ID, job.FileName, string(rec.Status), 100, "finalizado", rec.ProductID, finalErr)
-					log.Printf("[processor] worker_%d finalizó file_id=%s status=%s", id, job.ID, rec.Status)
+					s.runJob(id, job)
 				}
 			}(workerID)
 		}
 	})
+}
+
+// runJob procesa un único trabajo. Envolvemos en defer/recover para garantizar la invariante:
+// todo archivo debe terminar en PROCESSED, SKIPPED o ERROR — nunca en PROCESSING/QUEUED huérfano.
+// Si el procesamiento panicaea, el archivo pasa a ERROR con el detalle del panic + stack para
+// depurar, y el worker sigue vivo para atender los siguientes. Si el panic ocurre después de
+// que el estado terminal ya se escribió (p. ej. dentro del envío de correo), se preserva.
+func (s *Service) runJob(workerID int, job queuedJob) {
+	terminalWritten := false
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		stack := debug.Stack()
+		log.Printf("[processor] worker_%d PANIC file_id=%s file=%q err=%v terminal_ya_escrito=%t\n%s",
+			workerID, job.ID, job.FileName, r, terminalWritten, stack)
+		if terminalWritten {
+			// El archivo ya alcanzó estado terminal (PROCESSED/ERROR/SKIPPED); no sobrescribir.
+			return
+		}
+		errMsg := fmt.Sprintf("panic durante procesamiento: %v", r)
+		s.store.AddFileRecord(model.FileProcessRecord{
+			ID:          job.ID,
+			FileName:    job.FileName,
+			Status:      model.FileStatusError,
+			ErrorReason: errMsg,
+			RemotePath:  job.FileName,
+			ProcessedAt: time.Now().UTC(),
+		})
+		s.updateProgress(job.ID, job.FileName, "ERROR", 100, "panic recuperado", "", errMsg)
+	}()
+
+	log.Printf("[processor] worker_%d tomó file_id=%s file=%s", workerID, job.ID, job.FileName)
+	s.updateProgress(job.ID, job.FileName, "PROCESSING", 0, "iniciando procesamiento", "", "")
+	s.store.AddFileRecord(model.FileProcessRecord{
+		ID:          job.ID,
+		FileName:    job.FileName,
+		Status:      model.FileStatusProcessing,
+		RemotePath:  job.FileName,
+		ProcessedAt: time.Now().UTC(),
+	})
+	rec := s.processByName(job)
+	s.store.AddFileRecord(rec)
+	terminalWritten = true
+	s.notifyFileProcessing(rec)
+	finalErr := rec.ErrorReason
+	s.updateProgress(job.ID, job.FileName, string(rec.Status), 100, "finalizado", rec.ProductID, finalErr)
+	log.Printf("[processor] worker_%d finalizó file_id=%s status=%s", workerID, job.ID, rec.Status)
 }
 
 func (s *Service) notifyFileProcessing(rec model.FileProcessRecord) {
@@ -955,11 +999,17 @@ func buildArchivePath(fileID, fileName string) (string, error) {
 	if baseDir == "" {
 		baseDir = "./data/files-archive"
 	}
-	if err := os.MkdirAll(baseDir, 0o755); err != nil {
+	// Resolver a absoluto: si el servicio se reinicia con otro cwd, la ruta guardada en DB
+	// sigue apuntando al mismo archivo. Sin esto, "./data/files-archive/..." queda huérfano.
+	absBase, err := filepath.Abs(baseDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve archive dir: %w", err)
+	}
+	if err := os.MkdirAll(absBase, 0o755); err != nil {
 		return "", fmt.Errorf("mkdir archive dir: %w", err)
 	}
 	safeName := strings.ReplaceAll(fileName, string(filepath.Separator), "_")
-	fullPath := filepath.Join(baseDir, fmt.Sprintf("%s_%s", fileID, safeName))
+	fullPath := filepath.Join(absBase, fmt.Sprintf("%s_%s", fileID, safeName))
 	return fullPath, nil
 }
 

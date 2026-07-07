@@ -284,6 +284,28 @@ func (s *Store) AddFileRecord(r model.FileProcessRecord) {
 	_, _ = s.db.Exec(sqlStr, args...)
 }
 
+// MarkStaleFilesAsError pasa a ERROR cualquier archivo que quedó en un estado transitorio
+// (PENDING, QUEUED, PROCESSING) de una ejecución anterior interrumpida. Se llama al inicio del
+// servicio, cuando ningún worker está corriendo todavía, para que ningún archivo quede huérfano
+// y la UI/reintento puedan operar. Devuelve la cantidad de filas actualizadas.
+func (s *Store) MarkStaleFilesAsError() (int64, error) {
+	const reason = "proceso interrumpido antes de finalizar (recuperado al reiniciar el servicio)"
+	res, err := s.db.Exec(
+		`UPDATE processed_files
+		 SET status = 'ERROR',
+		     error_reason = CONCAT(COALESCE(NULLIF(error_reason, ''), ''),
+		                           CASE WHEN error_reason IS NULL OR error_reason = '' THEN '' ELSE ' | ' END,
+		                           ?)
+		 WHERE status IN ('PENDING', 'QUEUED', 'PROCESSING')`,
+		reason,
+	)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 // SetFileEmailError persiste el fallo de notificación por correo del archivo.
 func (s *Store) SetFileEmailError(fileID, emailError string) error {
 	fileID = strings.TrimSpace(fileID)
