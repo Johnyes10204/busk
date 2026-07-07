@@ -63,6 +63,9 @@ func observacionJustificaDiferenciaBolivar(obs string) bool {
 }
 
 // bolivarPlazoCalculadoMeses — E.2: plazo calculado a partir de fechas de adjudicación y vencimiento.
+// Usa 30.4375 = 365.25/12 (promedio real de días por mes) con redondeo, para evitar
+// el sesgo acumulado de "1 mes = 30 días" que en créditos largos derivaba en avisos
+// de PLAZO por diferencia de fórmula, no del negocio.
 func bolivarPlazoCalculadoMeses(inicio, fin time.Time) int {
 	if inicio.IsZero() || fin.IsZero() || fin.Before(inicio) {
 		return 0
@@ -71,7 +74,19 @@ func bolivarPlazoCalculadoMeses(inicio, fin time.Time) int {
 	if days < 0 {
 		return 0
 	}
-	return int(math.Floor(days / 30))
+	return int(math.Round(days / 30.4375))
+}
+
+// bolivarPlazoMesesDesdeValues prefiere el PLAZO CRÉDITO del archivo (mapeo canónico
+// "calculated_term") como fuente de verdad para E.2/E.5. Si no viene o no es numérico,
+// cae al cálculo por fechas.
+func bolivarPlazoMesesDesdeValues(values map[string]string, adj, fin time.Time) int {
+	if raw := strings.TrimSpace(values["calculated_term"]); raw != "" {
+		if n, err := parseFlexibleNumber(raw); err == nil && n > 0 && n < 600 {
+			return int(math.Round(n))
+		}
+	}
+	return bolivarPlazoCalculadoMeses(adj, fin)
 }
 
 func tasaPorcentajeDesdeValues(values map[string]string) string {
@@ -263,9 +278,10 @@ func applyBolivarDiagramRules(
 		}
 	}
 
-	// E.2 + E.5 (Nota 2) — plazo calculado y diferencia en días respecto al fin de plazo esperado.
+	// E.2 + E.5 (Nota 2) — plazo esperado tomado del archivo (PLAZO CRÉDITO) cuando viene;
+	// diferencia en días respecto al fin de plazo calculado sobre esa base.
 	if !adj.IsZero() && !due.IsZero() {
-		plazoCalc := bolivarPlazoCalculadoMeses(adj, due)
+		plazoCalc := bolivarPlazoMesesDesdeValues(values, adj, due)
 		finEsperado := adj.AddDate(0, plazoCalc, 0)
 		diffFinDias := int(due.Sub(finEsperado).Hours() / 24)
 		if diffFinDias != 0 {

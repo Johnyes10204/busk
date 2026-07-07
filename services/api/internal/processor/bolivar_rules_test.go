@@ -451,8 +451,55 @@ func TestBolivarPlazoCalculadoMeses_Anexo(t *testing.T) {
 	base := time.Date(1899, 12, 30, 0, 0, 0, 0, time.UTC)
 	adj := base.AddDate(0, 0, 44466)
 	due := base.AddDate(0, 0, 46058)
-	if got := bolivarPlazoCalculadoMeses(adj, due); got != 53 {
-		t.Fatalf("plazo meses: got %d want 53", got)
+	// 1592 días / 30.4375 (promedio real) = 52.31 → round = 52 meses.
+	if got := bolivarPlazoCalculadoMeses(adj, due); got != 52 {
+		t.Fatalf("plazo meses: got %d want 52", got)
+	}
+}
+
+// Reproduce el caso Pyme BANCO JUNIO 2026 (OP BT 1335056):
+// adj 2022-07-06, due 2028-07-04, PLAZO CRÉDITO 72 → no debe emitir REVISAR PLAZO.
+func TestBolivarPlazoMesesDesdeValues_PrefierePlazoCredito(t *testing.T) {
+	adj := time.Date(2022, 7, 6, 0, 0, 0, 0, time.UTC)
+	due := time.Date(2028, 7, 4, 0, 0, 0, 0, time.UTC)
+	values := map[string]string{"calculated_term": "72"}
+	if got := bolivarPlazoMesesDesdeValues(values, adj, due); got != 72 {
+		t.Fatalf("con PLAZO CRÉDITO=72 debe respetar el archivo, got %d", got)
+	}
+	// Sin el dato, fallback por fechas: 2190 días → round(2190/30.4375)=72.
+	if got := bolivarPlazoMesesDesdeValues(nil, adj, due); got != 72 {
+		t.Fatalf("fallback por fechas: got %d want 72", got)
+	}
+}
+
+// Caso end-to-end reportado por el cliente (Pyme BANCO JUNIO 2026, fila 25, OP BT 1335056):
+// con la fórmula anterior salía "REVISAR PLAZO: DIFERENCIA -33 DÍAS (CON OBSERVACIÓN)".
+// La corrección (usa PLAZO CRÉDITO y tolerancia 5 días default) elimina el falso positivo.
+func TestApplyBolivarDiagramRules_Pyme_1335056_NoRevisarPlazo(t *testing.T) {
+	values := map[string]string{
+		"initial_debt_amount":     "25000000",
+		"rate_percent":            "0.1",
+		"monthly_premium":         "25000",
+		"loan_award_date":         "06/07/2022",
+		"loan_due_date_current":   "04/07/2028",
+		"calculated_term":         "72",
+		"OBSERVACIONES JUNIO 2026": "FACTURACION JUNIO",
+	}
+	cfg := ruleRuntimeConfig{
+		DateLayouts:               defaultDateLayouts(),
+		BolivarPrimaCalcTolerance: 1,
+		BolivarPlazoDiasTolerance: 5,
+	}
+	hard, soft := applyBolivarDiagramRules(values, cfg)
+	for _, h := range hard {
+		if strings.Contains(strings.ToUpper(h), "REVISAR PLAZO") {
+			t.Fatalf("no debe reportar REVISAR PLAZO: hard=%v soft=%v", hard, soft)
+		}
+	}
+	for _, s := range soft {
+		if strings.Contains(strings.ToUpper(s), "REVISAR PLAZO") {
+			t.Fatalf("no debe reportar REVISAR PLAZO ni como soft: soft=%v", soft)
+		}
 	}
 }
 

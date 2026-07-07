@@ -971,7 +971,7 @@ func (s *Service) buildRuleRuntimeConfig(p model.Product) ruleRuntimeConfig {
 		AllowedPremiums:            s.store.GetAllowedPremiums(p.ID),
 		BolivarDebtManualThreshold: 20000000,
 		BolivarPrimaCalcTolerance:  1.0,
-		BolivarPlazoDiasTolerance:        0,
+		BolivarPlazoDiasTolerance:        5,
 		BolivarDueReferenceMonthOffset:   -1,
 		BolivarValidateDueMonth:          true,
 		MapfreRequireCurrentMonth:  true,
