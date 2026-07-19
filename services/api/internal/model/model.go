@@ -29,9 +29,10 @@ type ProductFormat struct {
 }
 
 type FieldMap struct {
-	CanonicalField string `json:"canonical_field"`
-	SourceHeader   string `json:"source_header"`
-	Required       bool   `json:"required"`
+	CanonicalField string   `json:"canonical_field"`
+	SourceHeader   string   `json:"source_header"`
+	Aliases        []string `json:"aliases,omitempty"`
+	Required       bool     `json:"required"`
 }
 
 type RuleConfig struct {

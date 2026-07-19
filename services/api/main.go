@@ -812,41 +812,41 @@ func toPolicyResponseItems(items []model.PolicyRecord, includeRaw bool) []policy
 			Status:         p.PolicyStatus,
 			DocumentNumber: p.DocumentNumber,
 			CreditNumber:   p.CreditNumber,
-			CustomerData: map[string]any{
+			CustomerData: compactMap(map[string]any{
 				"id_number":   firstNonEmpty(p.DocumentNumber, getFirstString(raw, "document_number", "COD DOCUM", "IDENTIFICACIONAFILIADO", "IDENTIFICACION")),
-				"id_type":     getFirstString(raw, "COD CEDULA", "TIP DOCUMENTOB1", "TIP DOCUMENTO"),
-				"full_name":   joinName(getFirstString(raw, "NOMBRE AP"), getFirstString(raw, "APELLIDO1 AP"), getFirstString(raw, "APELLIDO2 AP")),
-				"gender":      getFirstString(raw, "GENERO"),
+				"id_type":     getFirstString(raw, "id_type", "TIPOIDENTIFICACION", "TIPO DOCUMENTO", "COD CEDULA", "TIP DOCUMENTOB1", "TIP DOCUMENTO"),
+				"full_name":   joinName(getFirstString(raw, "full_name", "NOMBRES", "NOMBRE AP"), getFirstString(raw, "last_name_1", "APELLIDO PATERNO", "APELLIDO1 AP"), getFirstString(raw, "last_name_2", "APELLIDO MATERNO", "APELLIDO2 AP")),
+				"gender":      getFirstString(raw, "gender", "GENERO", "SEXO"),
 				"birth_date":  getFirstString(raw, "birth_date", "FECHA NAC", "FECHA DE NACIMIENTO", "FECHANACIMIENTO"),
-				"phone":       getFirstString(raw, "TELEFONO"),
-				"email":       getFirstString(raw, "CORREO"),
+				"phone":       getFirstString(raw, "phone", "Telefono", "TELEFONO", "CELULAR"),
+				"email":       getFirstString(raw, "email", "E-mail", "CORREO"),
 				"office":      getFirstString(raw, "office", "OFICINA"),
 				"department":  getFirstString(raw, "DEPARTAMENTO"),
-				"address":     getFirstString(raw, "DIRECCION"),
+				"address":     getFirstString(raw, "DIRECCION", "DIRECCIÓN"),
 				"postal_code": getFirstString(raw, "POSTAL"),
-			},
-			FinancialData: map[string]any{
+			}),
+			FinancialData: compactMap(map[string]any{
 				"base_value":    parseNumberOrZero(getFirstString(raw, "initial_debt_amount", "DEUDA INICIAL", "VALOR ASEGURADO")),
 				"premium_value": premium,
-				"tax_value":     0,
 				"total_value":   premium,
 				"currency":      "COP",
 				"applied_rate":  parseNumberOrNil(getFirstString(raw, "rate_percent", "%")),
-			},
-			ReferenceData: map[string]any{
+			}),
+			ReferenceData: compactMap(map[string]any{
 				"reference_number": firstNonEmpty(p.CreditNumber, getFirstString(raw, "credit_number", "NUMERO DE CREDITO", "NUMEROPRESTAMO", "OP BT")),
-				"start_date":       getFirstString(raw, "coverage_start_date", "FECHA INICIO DE VIGENCIA", "FECHA INICIO VIG REAL"),
-				"end_date":         getFirstString(raw, "coverage_end_date", "FECHAFINVIGENCIADERIESGO REAL", "FECHAFINVIGENCIADERIESGO REAL CORRECTA FINAL"),
-				"additional_system_info": map[string]any{
+				// MAPFRE: coverage_start_date / coverage_end_date. Bolívar: loan_award_date / loan_due_date_current.
+				"start_date": getFirstString(raw, "coverage_start_date", "activation_date", "loan_award_date", "FECHA INICIO DE VIGENCIA", "FECHA ADJUDICACION"),
+				"end_date":   getFirstString(raw, "coverage_end_date", "loan_due_date_current", "FECHAFINVIGENCIADERIESGO REAL", "FECHA VENCIMIENTO ACTUAL"),
+				"additional_system_info": compactMap(map[string]any{
 					"plan_code":    getFirstString(raw, "plan_code", "PLAN", "CODIGO SEGURO"),
 					"plan_name":    getFirstString(raw, "plan_name", "PLAN", "PRODUCTO"),
 					"loan_due":     getFirstString(raw, "loan_due_date_current", "FECHA VENCIMIENTO ACTUAL"),
 					"loan_award":   getFirstString(raw, "loan_award_date", "FECHA ADJUDICACION"),
-					"term_months":  getFirstString(raw, "initial_term_months", "PLAZO INICIAL", "PLAZO INICIAL FINAL"),
+					"term_months":  getFirstString(raw, "calculated_term", "PLAZO CRÉDITO", "initial_term_months", "PLAZO INICIAL", "PLAZO INICIAL FINAL"),
 					"file_name":    p.FileName,
 					"product_code": p.ProductID,
-				},
-			},
+				}),
+			}),
 			ValidationData: map[string]any{
 				"is_valid":               p.PolicyStatus != "MANUAL_REVIEW",
 				"alerts":                 notes,
@@ -870,6 +870,37 @@ func parseBoolQuery(v string) bool {
 	default:
 		return false
 	}
+}
+
+// compactMap elimina del mapa las claves cuyo valor es string vacío o cero numérico,
+// para no enviar campos sin datos en la respuesta JSON.
+func compactMap(m map[string]any) map[string]any {
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		switch val := v.(type) {
+		case string:
+			if strings.TrimSpace(val) != "" {
+				out[k] = v
+			}
+		case float64:
+			if val != 0 {
+				out[k] = v
+			}
+		case int:
+			if val != 0 {
+				out[k] = v
+			}
+		case map[string]any:
+			if inner := compactMap(val); len(inner) > 0 {
+				out[k] = inner
+			}
+		default:
+			if v != nil {
+				out[k] = v
+			}
+		}
+	}
+	return out
 }
 
 func getFirstString(raw map[string]any, keys ...string) string {
@@ -950,7 +981,7 @@ func mapfreStockDateMappings() []model.FieldMap {
 // bolivarBancoMappings columnas del layout Deudores Banco (Anexo 4 / MICRO_BANCO_*).
 // La columna "%" (sin espacio) es la tasa de prima; "% " es otra tasa (valor servicio).
 func bolivarBancoMappings() []model.FieldMap {
-	return append([]model.FieldMap{
+	return []model.FieldMap{
 		{CanonicalField: "document_number", SourceHeader: "IDENTIFICACION", Required: true},
 		{CanonicalField: "birth_date", SourceHeader: "FECHA DE NACIMIENTO", Required: true},
 		{CanonicalField: "credit_number", SourceHeader: "OP BT", Required: true},
@@ -965,24 +996,29 @@ func bolivarBancoMappings() []model.FieldMap {
 		{CanonicalField: "office", SourceHeader: "OFICINA", Required: false},
 		{CanonicalField: "email", SourceHeader: "E-mail", Required: false},
 		{CanonicalField: "phone", SourceHeader: "Telefono", Required: false},
-		{CanonicalField: "observacion", SourceHeader: "OBSERVACIONES ABRIL 2026", Required: false},
-	}, []model.FieldMap{
+		{CanonicalField: "full_name", SourceHeader: "NOMBRES", Required: false},
+		{CanonicalField: "last_name_1", SourceHeader: "APELLIDO PATERNO", Required: false},
+		{CanonicalField: "last_name_2", SourceHeader: "APELLIDO MATERNO", Required: false},
+		// MICRO_BANCO usa "TIPO DOCUMENTO"; Pyme_BANCO y ESAL usan "TIPOIDENTIFICACION".
+		{CanonicalField: "id_type", SourceHeader: "TIPOIDENTIFICACION", Aliases: []string{"TIPO DOCUMENTO"}, Required: false},
 		{CanonicalField: "gender", SourceHeader: "GENERO", Required: false},
-	}...)
+		{CanonicalField: "observacion", SourceHeader: "OBSERVACIONES ABRIL 2026", Required: false},
+	}
 }
 
 func optionalPersonMappings() []model.FieldMap {
 	return []model.FieldMap{
-		// Datos de persona: se mapean en seed pero se dejan opcionales por ahora.
-		{CanonicalField: "full_name", SourceHeader: "NOMBRE AP", Required: false},
-		{CanonicalField: "first_name", SourceHeader: "NOMBRE AP", Required: false},
-		{CanonicalField: "last_name_1", SourceHeader: "APELLIDO1 AP", Required: false},
-		{CanonicalField: "last_name_2", SourceHeader: "APELLIDO2 AP", Required: false},
-		{CanonicalField: "gender", SourceHeader: "GENERO", Required: false},
+		// Nombres: ACC MEN y Cáncer usan "NOMBRE AP"; Vida VOL usa "NOMBRES" y apellidos sin espacio.
+		{CanonicalField: "full_name", SourceHeader: "NOMBRE AP", Aliases: []string{"NOMBRES"}, Required: false},
+		{CanonicalField: "last_name_1", SourceHeader: "APELLIDO1 AP", Aliases: []string{"APELLIDOPATERNO"}, Required: false},
+		{CanonicalField: "last_name_2", SourceHeader: "APELLIDO2 AP", Aliases: []string{"APELLIDOMATERNO"}, Required: false},
+		// Tipo de doc: Cáncer="COD CEDULA", ACC MEN="TIPO DOC", Vida VOL="TIPOIDENTIFICACIONAFILIADO".
+		{CanonicalField: "id_type", SourceHeader: "COD CEDULA", Aliases: []string{"TIPO DOC", "TIPOIDENTIFICACIONAFILIADO"}, Required: false},
+		{CanonicalField: "gender", SourceHeader: "GENERO", Aliases: []string{"SEXO"}, Required: false},
 		{CanonicalField: "email", SourceHeader: "CORREO", Required: false},
-		{CanonicalField: "phone", SourceHeader: "TELEFONO", Required: false},
-		{CanonicalField: "address", SourceHeader: "DIRECCION", Required: false},
-		{CanonicalField: "city", SourceHeader: "OFICINA", Required: false},
+		// Teléfono: ACC MEN y Cáncer="TELEFONO"; Vida VOL="CELULAR".
+		{CanonicalField: "phone", SourceHeader: "TELEFONO", Aliases: []string{"CELULAR"}, Required: false},
+		{CanonicalField: "address", SourceHeader: "DIRECCION", Aliases: []string{"DIRECCIÓN"}, Required: false},
 		{CanonicalField: "department", SourceHeader: "DEPARTAMENTO", Required: false},
 		{CanonicalField: "postal_code", SourceHeader: "POSTAL", Required: false},
 	}
@@ -1114,7 +1150,7 @@ func mapfreCancerInclusionMappings() []model.FieldMap {
 
 // bolivarEsalMappings: Deudores ESAL (FECHA VENCIMIENTO sin "ACTUAL").
 func bolivarEsalMappings() []model.FieldMap {
-	return append([]model.FieldMap{
+	return []model.FieldMap{
 		{CanonicalField: "document_number", SourceHeader: "IDENTIFICACION", Required: true},
 		{CanonicalField: "birth_date", SourceHeader: "FECHA DE NACIMIENTO", Required: true},
 		{CanonicalField: "credit_number", SourceHeader: "OP BT", Required: true},
@@ -1129,8 +1165,12 @@ func bolivarEsalMappings() []model.FieldMap {
 		{CanonicalField: "office", SourceHeader: "OFICINA", Required: false},
 		{CanonicalField: "email", SourceHeader: "E-mail", Required: false},
 		{CanonicalField: "phone", SourceHeader: "Telefono", Required: false},
+		{CanonicalField: "full_name", SourceHeader: "NOMBRES", Required: false},
+		{CanonicalField: "last_name_1", SourceHeader: "APELLIDO PATERNO", Required: false},
+		{CanonicalField: "last_name_2", SourceHeader: "APELLIDO MATERNO", Required: false},
+		{CanonicalField: "id_type", SourceHeader: "TIPOIDENTIFICACION", Required: false},
 		{CanonicalField: "gender", SourceHeader: "GENERO", Required: false},
-	}, optionalPersonMappings()...)
+	}
 }
 
 // mapfreVidaInclusionVFMappings: inclusiones con FECHAACTIVACION (febrero/abril VF, no solo inicio vigencia).
