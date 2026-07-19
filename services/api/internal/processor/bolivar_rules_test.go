@@ -451,9 +451,9 @@ func TestBolivarPlazoCalculadoMeses_Anexo(t *testing.T) {
 	base := time.Date(1899, 12, 30, 0, 0, 0, 0, time.UTC)
 	adj := base.AddDate(0, 0, 44466)
 	due := base.AddDate(0, 0, 46058)
-	// 1592 días / 30.4375 (promedio real) = 52.31 → round = 52 meses.
-	if got := bolivarPlazoCalculadoMeses(adj, due); got != 52 {
-		t.Fatalf("plazo meses: got %d want 52", got)
+	// 1592 días / 30 = 53.06 → floor = 53 meses (fórmula cliente: REDONDEAR.MENOS(DIAS/30;0)).
+	if got := bolivarPlazoCalculadoMeses(adj, due); got != 53 {
+		t.Fatalf("plazo meses: got %d want 53", got)
 	}
 }
 
@@ -466,9 +466,9 @@ func TestBolivarPlazoMesesDesdeValues_PrefierePlazoCredito(t *testing.T) {
 	if got := bolivarPlazoMesesDesdeValues(values, adj, due); got != 72 {
 		t.Fatalf("con PLAZO CRÉDITO=72 debe respetar el archivo, got %d", got)
 	}
-	// Sin el dato, fallback por fechas: 2190 días → round(2190/30.4375)=72.
-	if got := bolivarPlazoMesesDesdeValues(nil, adj, due); got != 72 {
-		t.Fatalf("fallback por fechas: got %d want 72", got)
+	// Sin el dato, fallback por fechas: 2190 días → floor(2190/30)=73.
+	if got := bolivarPlazoMesesDesdeValues(nil, adj, due); got != 73 {
+		t.Fatalf("fallback por fechas: got %d want 73", got)
 	}
 }
 
@@ -500,6 +500,133 @@ func TestApplyBolivarDiagramRules_Pyme_1335056_NoRevisarPlazo(t *testing.T) {
 		if strings.Contains(strings.ToUpper(s), "REVISAR PLAZO") {
 			t.Fatalf("no debe reportar REVISAR PLAZO ni como soft: soft=%v", soft)
 		}
+	}
+}
+
+// Cuando el fin de vigencia real cae ANTES del esperado por PLAZO (diff negativo),
+// el crédito fue acortado. No debe emitirse "REVISAR PLAZO: DIFERENCIA -N DÍAS":
+// la alerta confunde al operador y no aporta información accionable.
+func TestApplyBolivarDiagramRules_DiffNegativa_NoRevisarPlazo(t *testing.T) {
+	values := map[string]string{
+		"initial_debt_amount":   "25000000",
+		"rate_percent":          "0.1",
+		"monthly_premium":       "25000",
+		"loan_award_date":       "01/01/2024",
+		"loan_due_date_current": "01/06/2024",
+		"calculated_term":       "24",
+	}
+	cfg := ruleRuntimeConfig{
+		DateLayouts:               defaultDateLayouts(),
+		BolivarPrimaCalcTolerance: 1,
+		BolivarPlazoDiasTolerance: 5,
+	}
+	hard, soft := applyBolivarDiagramRules(values, cfg)
+	for _, h := range hard {
+		if strings.Contains(strings.ToUpper(h), "REVISAR PLAZO") {
+			t.Fatalf("diff negativo no debe reportar REVISAR PLAZO: hard=%v", hard)
+		}
+	}
+	for _, s := range soft {
+		if strings.Contains(strings.ToUpper(s), "REVISAR PLAZO") {
+			t.Fatalf("diff negativo no debe reportar REVISAR PLAZO ni como soft: soft=%v", soft)
+		}
+	}
+}
+
+// El mensaje debe reportar el plazo real (calculado desde ADJUDICACIÓN→FIN VIGENCIA)
+// contra el plazo que el archivo dice que debería ser (PLAZO CRÉDITO), en meses.
+func TestApplyBolivarDiagramRules_MensajeExplicaCalculoPlazo(t *testing.T) {
+	values := map[string]string{
+		"initial_debt_amount":      "25000000",
+		"rate_percent":             "0.1",
+		"monthly_premium":          "25000",
+		"loan_award_date":          "01/01/2024",
+		"loan_due_date_current":    "09/03/2026",
+		"calculated_term":          "24",
+		"OBSERVACIONES JUNIO 2026": "AJUSTE FACTURACIÓN",
+	}
+	cfg := ruleRuntimeConfig{
+		DateLayouts:               defaultDateLayouts(),
+		BolivarPrimaCalcTolerance: 1,
+		BolivarPlazoDiasTolerance: 5,
+	}
+	_, soft := applyBolivarDiagramRules(values, cfg)
+	var msg string
+	for _, s := range soft {
+		if strings.Contains(strings.ToUpper(s), "REVISAR PLAZO") {
+			msg = s
+			break
+		}
+	}
+	if msg == "" {
+		t.Fatalf("se esperaba una novedad REVISAR PLAZO (con observación) en soft=%v", soft)
+	}
+	for _, want := range []string{
+		"REVISAR PLAZO: PLAZO CALCULADO 26; EN ARCHIVO 24",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("mensaje debe contener %q, got %q", want, msg)
+		}
+	}
+}
+
+// Cuando el archivo no trae PLAZO CRÉDITO, el plazo esperado y el plazo calculado
+// se derivan de las mismas fechas — no hay valor independiente contra el cual
+// comparar, así que "PLAZO CALCULADO X; EN ARCHIVO Y" quedaría con X == Y y no
+// aportaría al operador. No debe emitirse REVISAR PLAZO en ese modo.
+func TestApplyBolivarDiagramRules_SinPlazoCredito_NoEmiteRevisarPlazo(t *testing.T) {
+	values := map[string]string{
+		"initial_debt_amount":   "25000000",
+		"rate_percent":          "0.1",
+		"monthly_premium":       "25000",
+		"loan_award_date":       "01/01/2024",
+		"loan_due_date_current": "09/03/2026",
+		// sin calculated_term → fallback por fechas
+	}
+	cfg := ruleRuntimeConfig{
+		DateLayouts:               defaultDateLayouts(),
+		BolivarPrimaCalcTolerance: 1,
+		BolivarPlazoDiasTolerance: 5,
+	}
+	hard, soft := applyBolivarDiagramRules(values, cfg)
+	for _, h := range hard {
+		if strings.Contains(strings.ToUpper(h), "REVISAR PLAZO") {
+			t.Fatalf("sin PLAZO CRÉDITO no debe emitir REVISAR PLAZO: hard=%v", hard)
+		}
+	}
+	for _, s := range soft {
+		if strings.Contains(strings.ToUpper(s), "REVISAR PLAZO") {
+			t.Fatalf("sin PLAZO CRÉDITO no debe emitir REVISAR PLAZO ni como soft: soft=%v", soft)
+		}
+	}
+}
+
+// Complemento: cuando el fin de vigencia se pasa del plazo (diff positivo grande)
+// la alerta sí debe emitirse como antes.
+func TestApplyBolivarDiagramRules_DiffPositivaExcedeTol_SiRevisarPlazo(t *testing.T) {
+	values := map[string]string{
+		"initial_debt_amount":   "25000000",
+		"rate_percent":          "0.1",
+		"monthly_premium":       "25000",
+		"loan_award_date":       "01/01/2024",
+		"loan_due_date_current": "01/06/2026",
+		"calculated_term":       "24",
+	}
+	cfg := ruleRuntimeConfig{
+		DateLayouts:               defaultDateLayouts(),
+		BolivarPrimaCalcTolerance: 1,
+		BolivarPlazoDiasTolerance: 5,
+	}
+	hard, _ := applyBolivarDiagramRules(values, cfg)
+	found := false
+	for _, h := range hard {
+		if strings.Contains(strings.ToUpper(h), "REVISAR PLAZO") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("diff positivo grande sí debe reportar REVISAR PLAZO: hard=%v", hard)
 	}
 }
 
