@@ -474,17 +474,68 @@ func mensajePlazoCalculadoDifiereJustificado(plazoArchivo float64, plazoCalc int
 	return fmt.Sprintf("REVISAR PLAZO: ARCHIVO %s, CALCULADO %d (CON OBSERVACIÓN)", formatoMontoNegocio(plazoArchivo), plazoCalc)
 }
 
-func mensajePlazoFinVigenciaIncoherente(values map[string]string, diffDias, plazoMeses int, adj, due time.Time) string {
+func mensajePlazoFinVigenciaIncoherente(values map[string]string, diffDias, plazoMeses int, adj, due time.Time, plazoOrigen string) string {
 	_ = values
-	_ = adj
-	_ = due
-	return fmt.Sprintf("REVISAR PLAZO: DIFERENCIA %d DÍAS (PLAZO %d MESES)", diffDias, plazoMeses)
+	_ = diffDias
+	_ = plazoOrigen
+	return fmt.Sprintf(
+		"REVISAR PLAZO: PLAZO CALCULADO %d; EN ARCHIVO %d",
+		mesesEntreFechas(adj, due),
+		plazoMeses,
+	)
 }
 
-func mensajePlazoFinVigenciaJustificado(values map[string]string, diffDias int, obs string) string {
+func mensajePlazoFinVigenciaJustificado(values map[string]string, diffDias, plazoMeses int, adj, due time.Time, obs, plazoOrigen string) string {
 	_ = values
+	_ = diffDias
 	_ = obs
-	return fmt.Sprintf("REVISAR PLAZO: DIFERENCIA %d DÍAS (CON OBSERVACIÓN)", diffDias)
+	_ = plazoOrigen
+	return fmt.Sprintf(
+		"REVISAR PLAZO: PLAZO CALCULADO %d; EN ARCHIVO %d",
+		mesesEntreFechas(adj, due),
+		plazoMeses,
+	)
+}
+
+// mesesEntreFechas cuenta los meses completos entre dos fechas usando el día del
+// mes como desempate (mismo criterio que time.AddDate(0, n, 0)).
+func mesesEntreFechas(adj, due time.Time) int {
+	if adj.IsZero() || due.IsZero() {
+		return 0
+	}
+	m := (due.Year()-adj.Year())*12 + int(due.Month()) - int(adj.Month())
+	if due.Day() < adj.Day() {
+		m--
+	}
+	return m
+}
+
+func finVigenciaEsperado(adj time.Time, plazoMeses int) time.Time {
+	if adj.IsZero() || plazoMeses <= 0 {
+		return time.Time{}
+	}
+	return adj.AddDate(0, plazoMeses, 0)
+}
+
+// formatoFechaBusk imprime la fecha en formato dd/mm/aaaa (o "(sin fecha)" si es zero).
+func formatoFechaBusk(t time.Time) string {
+	if t.IsZero() {
+		return "(sin fecha)"
+	}
+	return t.Format("02/01/2006")
+}
+
+// plazoOrigenTexto etiqueta el origen del plazo utilizado: "PLAZO CRÉDITO" del archivo
+// o cálculo por fechas de fallback.
+func plazoOrigenTexto(origen string) string {
+	switch strings.ToLower(strings.TrimSpace(origen)) {
+	case "archivo", "plazo_credito", "plazo-credito":
+		return "tomado de PLAZO CRÉDITO del archivo"
+	case "fechas", "calculado":
+		return "calculado por fechas ADJUDICACIÓN→VENCIMIENTO"
+	default:
+		return "tomado del archivo"
+	}
 }
 
 func mensajePrimaNoCoincideValidacionExcel(primaArchivo, primaExcel float64, refRaw string) string {

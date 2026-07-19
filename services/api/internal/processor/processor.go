@@ -41,6 +41,9 @@ type Service struct {
 type queuedJob struct {
 	ID       string
 	FileName string
+	// LocalDir, si no está vacío, indica que el archivo debe leerse del disco
+	// desde esa carpeta (modo reingesta local) en vez de conectarse al SFTP.
+	LocalDir string
 }
 
 type ProgressInfo struct {
@@ -154,6 +157,12 @@ func (s *Service) runJob(workerID int, job queuedJob) {
 	})
 	rec := s.processByName(job)
 	s.store.AddFileRecord(rec)
+	// Red de seguridad: si el AddFileRecord falló silenciosamente (JSON demasiado grande,
+	// timeout, deadlock), un UPDATE mínimo garantiza que al menos el status terminal quede
+	// escrito. Sin esto un fallo de payload dejaba el archivo en PROCESSING para siempre.
+	if err := s.store.FinalizeFileStatus(rec); err != nil {
+		log.Printf("[processor] worker_%d FinalizeFileStatus falló file_id=%s err=%v", workerID, job.ID, err)
+	}
 	terminalWritten = true
 	s.notifyFileProcessing(rec)
 	finalErr := rec.ErrorReason
@@ -175,6 +184,7 @@ func (s *Service) notifyFileProcessing(rec model.FileProcessRecord) {
 		ErrorReason:          rec.ErrorReason,
 		ValidationReportJSON: rec.ValidationReportJSON,
 		ArchivePath:          rec.ArchivePath,
+		ReportArchivePath:    rec.ReportArchivePath,
 		ProcessedAt:          rec.ProcessedAt,
 	})
 	if err != nil {
@@ -268,6 +278,80 @@ func (s *Service) ScanAndEnqueue() (int, error) {
 	return enqueued, nil
 }
 
+// ScanAndEnqueueLocal enumera archivos XLSX/XLS/CSV de una carpeta local y los encola con
+// LocalDir seteado para que el worker los procese leyendo del disco en vez del SFTP.
+// Al finalizar, cada archivo se mueve a dir/PROCESSED o dir/ERROR según corresponda.
+// El dedup por SHA-256 aplica igual que en SFTP: archivos ya procesados quedan en SKIPPED.
+func (s *Service) ScanAndEnqueueLocal(dir string) (int, error) {
+	if strings.TrimSpace(dir) == "" {
+		return 0, fmt.Errorf("directorio local es obligatorio")
+	}
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return 0, fmt.Errorf("resolver ruta %s: %w", dir, err)
+	}
+	entries, err := os.ReadDir(absDir)
+	if err != nil {
+		return 0, fmt.Errorf("leer carpeta %s: %w", absDir, err)
+	}
+	log.Printf("[processor] scan-local dir=%s entradas=%d", absDir, len(entries))
+
+	candidates := make([]string, 0)
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !isSpreadsheet(name) {
+			continue
+		}
+		candidates = append(candidates, name)
+	}
+
+	sort.SliceStable(candidates, func(i, j int) bool {
+		pi := filePriority(candidates[i])
+		pj := filePriority(candidates[j])
+		if pi == pj {
+			return candidates[i] < candidates[j]
+		}
+		return pi > pj
+	})
+
+	enqueued := 0
+	for _, name := range candidates {
+		job := queuedJob{
+			ID:       fmt.Sprintf("file_%d", time.Now().UnixNano()),
+			FileName: name,
+			LocalDir: absDir,
+		}
+		s.updateProgress(job.ID, job.FileName, "QUEUED", 0, "encolado (local)", "", "")
+		s.store.AddFileRecord(model.FileProcessRecord{
+			ID:          job.ID,
+			FileName:    job.FileName,
+			Status:      model.FileStatusQueued,
+			RemotePath:  filepath.Join(absDir, name),
+			ProcessedAt: time.Now().UTC(),
+		})
+		select {
+		case s.jobs <- job:
+			enqueued++
+			log.Printf("[processor] encolado (local) file_id=%s file=%s cola_ocupada=%d", job.ID, job.FileName, len(s.jobs))
+		default:
+			log.Printf("[processor] cola llena, se omite archivo=%s (local)", name)
+			s.store.AddFileRecord(model.FileProcessRecord{
+				ID:          job.ID,
+				FileName:    job.FileName,
+				Status:      model.FileStatusError,
+				ErrorReason: "cola de procesamiento llena",
+				RemotePath:  filepath.Join(absDir, name),
+				ProcessedAt: time.Now().UTC(),
+			})
+			s.updateProgress(job.ID, job.FileName, "ERROR", 100, "cola llena", "", "cola de procesamiento llena")
+		}
+	}
+	return enqueued, nil
+}
+
 // RetryFileByID re-encola un archivo específico (normalmente en ERROR) para reprocesarlo.
 // Crea un nuevo file_id para mantener trazabilidad de intentos.
 func (s *Service) RetryFileByID(fileID string) (string, string, error) {
@@ -317,47 +401,68 @@ func (s *Service) RetryFileByID(fileID string) (string, string, error) {
 
 func (s *Service) processByName(job queuedJob) model.FileProcessRecord {
 	start := time.Now()
-	log.Printf("[processor] iniciando file_id=%s file=%s", job.ID, job.FileName)
-	cfg, err := sftpclient.NewFromEnv()
-	if err != nil {
-		log.Printf("[processor] sin conexión SFTP (config): file=%q permanece en raíz remota hasta corregir env", job.FileName)
-		return model.FileProcessRecord{
-			ID:          job.ID,
-			FileName:    job.FileName,
-			Status:      model.FileStatusError,
-			ErrorReason: "config sftp inválida: " + err.Error(),
-			RemotePath:  job.FileName,
-			ProcessedAt: time.Now().UTC(),
+	log.Printf("[processor] iniciando file_id=%s file=%s local_dir=%q", job.ID, job.FileName, job.LocalDir)
+
+	var src fileSource
+	if job.LocalDir != "" {
+		local, err := newLocalFileSource(job.LocalDir)
+		if err != nil {
+			log.Printf("[processor] modo local sin acceso a %q file=%q err=%v", job.LocalDir, job.FileName, err)
+			return model.FileProcessRecord{
+				ID:          job.ID,
+				FileName:    job.FileName,
+				Status:      model.FileStatusError,
+				ErrorReason: "no se pudo acceder a directorio local: " + err.Error(),
+				RemotePath:  job.FileName,
+				ProcessedAt: time.Now().UTC(),
+			}
 		}
-	}
-	c, err := sftpclient.Connect(cfg)
-	if err != nil {
-		log.Printf("[processor] sin conexión SFTP: file=%q permanece en raíz remota err=%v", job.FileName, err)
-		return model.FileProcessRecord{
-			ID:          job.ID,
-			FileName:    job.FileName,
-			Status:      model.FileStatusError,
-			ErrorReason: "no se pudo conectar a sftp: " + err.Error(),
-			RemotePath:  job.FileName,
-			ProcessedAt: time.Now().UTC(),
+		src = local
+		s.updateProgress(job.ID, job.FileName, "PROCESSING", 5, "modo local: "+local.baseDir, "", "")
+	} else {
+		cfg, err := sftpclient.NewFromEnv()
+		if err != nil {
+			log.Printf("[processor] sin conexión SFTP (config): file=%q permanece en raíz remota hasta corregir env", job.FileName)
+			return model.FileProcessRecord{
+				ID:          job.ID,
+				FileName:    job.FileName,
+				Status:      model.FileStatusError,
+				ErrorReason: "config sftp inválida: " + err.Error(),
+				RemotePath:  job.FileName,
+				ProcessedAt: time.Now().UTC(),
+			}
 		}
+		c, err := sftpclient.Connect(cfg)
+		if err != nil {
+			log.Printf("[processor] sin conexión SFTP: file=%q permanece en raíz remota err=%v", job.FileName, err)
+			return model.FileProcessRecord{
+				ID:          job.ID,
+				FileName:    job.FileName,
+				Status:      model.FileStatusError,
+				ErrorReason: "no se pudo conectar a sftp: " + err.Error(),
+				RemotePath:  job.FileName,
+				ProcessedAt: time.Now().UTC(),
+			}
+		}
+		src = sftpFileSource{c: c}
+		s.updateProgress(job.ID, job.FileName, "PROCESSING", 5, "conectado a sftp", "", "")
 	}
-	defer c.Close()
-	s.updateProgress(job.ID, job.FileName, "PROCESSING", 5, "conectado a sftp", "", "")
-	rec := s.processOne(c, job)
+	defer src.Close()
+	rec := s.processOne(src, job)
 	log.Printf("[processor] fin file_id=%s status=%s elapsed_ms=%d", job.ID, rec.Status, time.Since(start).Milliseconds())
 	return rec
 }
 
-// moveRemoteFile renombia el archivo desde la raíz configurada del SFTP a la subcarpeta ERROR o PROCESSED.
-// Si falla (permisos, carpeta, archivo ya movido, etc.), devuelve "" y deja trazado en log para operación manual.
-func moveRemoteFile(c *sftpclient.Client, fileName, folder string) string {
-	dst, err := c.MoveToFolder(fileName, folder)
+// moveRemoteFile renombia el archivo desde la raíz del origen (SFTP o local) a la subcarpeta
+// ERROR o PROCESSED. Si falla (permisos, carpeta, archivo ya movido, etc.), devuelve "" y
+// deja trazado en log para operación manual.
+func moveRemoteFile(src fileSource, fileName, folder string) string {
+	dst, err := src.MoveToFolder(fileName, folder)
 	if err != nil {
-		log.Printf("[processor] sftp MOVE falló file=%q dest_folder=%q err=%v", fileName, folder, err)
+		log.Printf("[processor] MOVE falló file=%q dest_folder=%q err=%v", fileName, folder, err)
 		return ""
 	}
-	log.Printf("[processor] sftp MOVE OK file=%q -> %s", fileName, dst)
+	log.Printf("[processor] MOVE OK file=%q -> %s", fileName, dst)
 	return dst
 }
 
@@ -396,7 +501,7 @@ func countPoliciesBlockingIssues(policies []model.PolicyRecord) int {
 	return n
 }
 
-func (s *Service) processOne(c *sftpclient.Client, job queuedJob) model.FileProcessRecord {
+func (s *Service) processOne(src fileSource, job queuedJob) model.FileProcessRecord {
 	fileName := job.FileName
 	rec := model.FileProcessRecord{
 		ID:          job.ID,
@@ -410,7 +515,7 @@ func (s *Service) processOne(c *sftpclient.Client, job queuedJob) model.FileProc
 	if len(products) == 0 {
 		rec.Status = model.FileStatusError
 		rec.ErrorReason = "no existe producto configurado para el prefijo del archivo"
-		rec.ProcessedPath = moveRemoteFile(c, fileName, "ERROR")
+		rec.ProcessedPath = moveRemoteFile(src, fileName, "ERROR")
 		if rec.ProcessedPath == "" {
 			rec.ErrorReason += " (no se pudo mover a carpeta ERROR/ en SFTP)"
 		}
@@ -418,11 +523,11 @@ func (s *Service) processOne(c *sftpclient.Client, job queuedJob) model.FileProc
 	}
 	s.updateProgress(job.ID, job.FileName, "PROCESSING", 10, "producto/formato identificado", "", "")
 
-	reader, err := c.OpenRelative(fileName)
+	reader, err := src.Open(fileName)
 	if err != nil {
 		rec.Status = model.FileStatusError
 		rec.ErrorReason = "no se pudo abrir archivo remoto: " + err.Error()
-		rec.ProcessedPath = moveRemoteFile(c, fileName, "ERROR")
+		rec.ProcessedPath = moveRemoteFile(src, fileName, "ERROR")
 		if rec.ProcessedPath == "" {
 			rec.ErrorReason += " (no se pudo mover a carpeta ERROR/ en SFTP)"
 		}
@@ -438,7 +543,7 @@ func (s *Service) processOne(c *sftpclient.Client, job queuedJob) model.FileProc
 			rec.ErrorReason = "archivo omitido: mismo contenido (SHA-256) ya procesado u omitido"
 			rec.FileHash = fileHash
 			rec.ArchivePath = archivePath
-			rec.ProcessedPath = moveRemoteFile(c, fileName, "PROCESSED")
+			rec.ProcessedPath = moveRemoteFile(src, fileName, "PROCESSED")
 			if rec.ProcessedPath == "" {
 				rec.ErrorReason += " | SFTP: no se pudo mover el archivo a PROCESSED/"
 			}
@@ -448,7 +553,7 @@ func (s *Service) processOne(c *sftpclient.Client, job queuedJob) model.FileProc
 		rec.ErrorReason = err.Error()
 		rec.FileHash = fileHash
 		rec.ArchivePath = archivePath
-		rec.ProcessedPath = moveRemoteFile(c, fileName, "ERROR")
+		rec.ProcessedPath = moveRemoteFile(src, fileName, "ERROR")
 		if rec.ProcessedPath == "" {
 			rec.ErrorReason += " | SFTP: no se pudo mover el archivo a ERROR/"
 		}
@@ -479,7 +584,7 @@ func (s *Service) processOne(c *sftpclient.Client, job queuedJob) model.FileProc
 		if marshErr != nil {
 			rec.Status = model.FileStatusError
 			rec.ErrorReason = "no se pudo serializar informe de validación: " + marshErr.Error()
-			rec.ProcessedPath = moveRemoteFile(c, fileName, "ERROR")
+			rec.ProcessedPath = moveRemoteFile(src, fileName, "ERROR")
 			if rec.ProcessedPath == "" {
 				rec.ErrorReason += " | SFTP: no se pudo mover el archivo a ERROR/"
 			}
@@ -489,7 +594,7 @@ func (s *Service) processOne(c *sftpclient.Client, job queuedJob) model.FileProc
 		rec.ReportArchivePath = saveValidationReportArchive(report, rec.ID, fileName)
 		rec.Status = model.FileStatusError
 		rec.ErrorReason = summary
-		rec.ProcessedPath = moveRemoteFile(c, fileName, "ERROR")
+		rec.ProcessedPath = moveRemoteFile(src, fileName, "ERROR")
 		if rec.ProcessedPath == "" {
 			rec.ErrorReason += " | SFTP: no se pudo mover el archivo a ERROR/"
 		}
@@ -500,7 +605,7 @@ func (s *Service) processOne(c *sftpclient.Client, job queuedJob) model.FileProc
 	if err := s.store.InsertPolicies(policies); err != nil {
 		rec.Status = model.FileStatusError
 		rec.ErrorReason = "no se pudieron registrar pólizas: " + err.Error()
-		rec.ProcessedPath = moveRemoteFile(c, fileName, "ERROR")
+		rec.ProcessedPath = moveRemoteFile(src, fileName, "ERROR")
 		if rec.ProcessedPath == "" {
 			rec.ErrorReason += " | SFTP: no se pudo mover el archivo a ERROR/"
 		}
@@ -559,7 +664,7 @@ func (s *Service) processOne(c *sftpclient.Client, job queuedJob) model.FileProc
 	}
 
 	rec.Status = model.FileStatusProcessed
-	rec.ProcessedPath = moveRemoteFile(c, fileName, "PROCESSED")
+	rec.ProcessedPath = moveRemoteFile(src, fileName, "PROCESSED")
 	if rec.ProcessedPath == "" {
 		msg := "advertencia: pólizas registradas pero el archivo no se pudo mover a PROCESSED/ en SFTP (revisar permisos o mover manualmente)"
 		if rec.ErrorReason != "" {

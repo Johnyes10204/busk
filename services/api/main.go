@@ -414,6 +414,31 @@ func main() {
 		})
 	})
 
+	mux.HandleFunc("/api/v1/process/scan-local", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		dir := strings.TrimSpace(r.URL.Query().Get("dir"))
+		if dir == "" {
+			dir = strings.TrimSpace(os.Getenv("FILES_ARCHIVE_DIR"))
+			if dir == "" {
+				dir = "./data/files-archive"
+			}
+		}
+		enqueued, err := proc.ScanAndEnqueueLocal(dir)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"status":   "queued",
+			"enqueued": enqueued,
+			"dir":      dir,
+			"message":  "archivos locales encolados para procesamiento (sin SFTP)",
+		})
+	})
+
 	mux.HandleFunc("/api/v1/files", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -626,6 +651,25 @@ func main() {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "query param file_id es obligatorio"})
 			return
 		}
+		// Preferimos servir el XLSX espejo archivado a disco: es la fuente autorizada
+		// del reporte y es lo mismo que el correo intenta adjuntar. Además evita
+		// re-generar Excel para archivos grandes cuando el JSON del reporte no cabe
+		// en MySQL (max_allowed_packet).
+		if rec, ok := st.GetFileRecordByID(fileID); ok && strings.TrimSpace(rec.ReportArchivePath) != "" {
+			if fi, err := os.Stat(rec.ReportArchivePath); err == nil && !fi.IsDir() && fi.Size() > 0 {
+				baseName := strings.TrimSpace(rec.FileName)
+				if baseName == "" {
+					baseName = fileID
+				}
+				baseName = strings.ReplaceAll(baseName, `"`, "")
+				w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+				w.Header().Set("Content-Disposition", `attachment; filename="novedades_`+baseName+`.xlsx"`)
+				http.ServeFile(w, r, rec.ReportArchivePath)
+				return
+			}
+		}
+		// Fallback: regenerar desde la BD (útil para archivos pequeños o cuando el
+		// XLSX en disco no existe).
 		report, err := st.GetFileValidationReport(fileID)
 		if err != nil {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "file_id no encontrado"})

@@ -6,6 +6,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"sort"
 	"strconv"
@@ -281,7 +282,43 @@ func (s *Store) AddFileRecord(r model.FileProcessRecord) {
 		Values(r.ID, r.FileName, nullableString(r.ProductID), nullableString(r.FileHash), string(r.Status), nullableString(r.ErrorReason), nullableString(r.EmailError), nullableString(r.ValidationReportJSON), r.RemotePath, nullableString(r.ProcessedPath), nullableString(r.ArchivePath), nullableString(r.ReportArchivePath), r.ProcessedAt).
 		Suffix("ON DUPLICATE KEY UPDATE product_id=VALUES(product_id), file_hash=VALUES(file_hash), status=VALUES(status), error_reason=VALUES(error_reason), email_error=VALUES(email_error), validation_report_json=VALUES(validation_report_json), remote_path=VALUES(remote_path), processed_path=VALUES(processed_path), archive_path=VALUES(archive_path), report_archive_path=VALUES(report_archive_path), processed_at=VALUES(processed_at)").
 		ToSql()
-	_, _ = s.db.Exec(sqlStr, args...)
+	if _, err := s.db.Exec(sqlStr, args...); err != nil {
+		// Sin este log una falla acá (JSON demasiado grande, packet, deadlock, timeout) dejaba
+		// el archivo en su estado anterior sin ninguna traza. Ahora la vemos y podemos actuar.
+		log.Printf("[store] AddFileRecord falló file_id=%s status=%s validation_json_bytes=%d err=%v",
+			r.ID, r.Status, len(r.ValidationReportJSON), err)
+	}
+}
+
+// FinalizeFileStatus escribe solo el estado terminal, el motivo y las rutas del archivo. Es
+// un UPDATE mínimo (sin validation_report_json ni columnas grandes), diseñado para tener
+// éxito aunque el AddFileRecord anterior haya fallado por tamaño de payload o timeout. Se
+// usa como red de seguridad para respetar la invariante: todo archivo llega a terminal en DB.
+func (s *Store) FinalizeFileStatus(r model.FileProcessRecord) error {
+	if strings.TrimSpace(r.ID) == "" {
+		return fmt.Errorf("file_id es obligatorio")
+	}
+	_, err := s.db.Exec(
+		`UPDATE processed_files
+		 SET status = ?,
+		     error_reason = ?,
+		     product_id = COALESCE(NULLIF(?, ''), product_id),
+		     file_hash = COALESCE(NULLIF(?, ''), file_hash),
+		     archive_path = COALESCE(NULLIF(?, ''), archive_path),
+		     report_archive_path = COALESCE(NULLIF(?, ''), report_archive_path),
+		     processed_path = COALESCE(NULLIF(?, ''), processed_path),
+		     processed_at = ?
+		 WHERE id = ?`,
+		string(r.Status),
+		nullableString(r.ErrorReason),
+		r.ProductID, r.FileHash, r.ArchivePath, r.ReportArchivePath, r.ProcessedPath,
+		r.ProcessedAt,
+		r.ID,
+	)
+	if err != nil {
+		log.Printf("[store] FinalizeFileStatus falló file_id=%s status=%s err=%v", r.ID, r.Status, err)
+	}
+	return err
 }
 
 // MarkStaleFilesAsError pasa a ERROR cualquier archivo que quedó en un estado transitorio
