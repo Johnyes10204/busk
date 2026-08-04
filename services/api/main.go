@@ -100,6 +100,9 @@ func main() {
 	}
 	proc := processor.New(st)
 
+	// Inicia escaneo automático cada 1 hora
+	startAutoScanScheduler(proc)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "time": time.Now().UTC().Format(time.RFC3339)})
@@ -729,6 +732,24 @@ func main() {
 	addr := ":8080"
 	log.Printf("API escuchando en %s", addr)
 	log.Fatal(http.ListenAndServe(addr, logging(mux)))
+}
+
+func startAutoScanScheduler(proc *processor.Service) {
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			log.Printf("[AUTO-SCAN] iniciando escaneo automático del SFTP")
+			enqueued, err := proc.ScanAndEnqueue()
+			if err != nil {
+				log.Printf("[AUTO-SCAN] error: %v", err)
+			} else {
+				log.Printf("[AUTO-SCAN] completado: %d archivos encolados", enqueued)
+			}
+		}
+	}()
+	log.Printf("[AUTO-SCAN] scheduler iniciado (frecuencia: cada 1 hora)")
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
