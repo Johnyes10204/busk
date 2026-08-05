@@ -1,0 +1,18 @@
+[Unit]
+Description=Busk Seguros API
+After=mysql.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/lambda_buskseguros/busk
+EnvironmentFile=/home/lambda_buskseguros/busk/.env
+ExecStart=/home/lambda_buskseguros/busk/services/api/busk-api
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+User=lambda_buskseguros
+
+[Install]
+WantedBy=multi-user.target
