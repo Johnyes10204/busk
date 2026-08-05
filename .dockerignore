@@ -1,0 +1,47 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+docs/
+DOCUMENTACION/
+*.md
+README.md
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Dependencies
+node_modules/
+vendor/
+
+# Build
+*.o
+*.a
+*.so
+*.exe
+busk-api
+
+# Data (don't copy test data to image)
+services/api/data/
+.env
+.env.*
+
+# Frontend (separate image)
+frontend-admin/
+
+# Tools
+tools/
+
+# Test files
+*_test.go
+coverage.out

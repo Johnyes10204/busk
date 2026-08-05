@@ -1,0 +1,68 @@
+version: "3.9"
+
+services:
+  # MySQL Database
+  mysql:
+    image: mysql:8.0
+    container_name: busk-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-busk}
+      MYSQL_USER: ${MYSQL_USER:-busk}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-busk123}
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - busk-network
+
+  # API Backend
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: busk-api
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      MYSQL_DSN: "busk:busk123@tcp(mysql:3306)/busk?parseTime=true&multiStatements=true"
+      PROCESSOR_WORKERS: ${PROCESSOR_WORKERS:-2}
+      PROCESSOR_READ_FULL_FILE_ON_ROW_ERRORS: ${PROCESSOR_READ_FULL_FILE_ON_ROW_ERRORS:-false}
+      FILES_ARCHIVE_DIR: ${FILES_ARCHIVE_DIR:-/data/files-archive}
+      REPORTS_ARCHIVE_DIR: ${REPORTS_ARCHIVE_DIR:-/data/reports-archive}
+      SENDGRID_API_KEY: ${SENDGRID_API_KEY:-}
+      SENDGRID_FROM_EMAIL: ${SENDGRID_FROM_EMAIL:-}
+      SENDGRID_ERROR_TO_EMAILS: ${SENDGRID_ERROR_TO_EMAILS:-}
+      SFTP_HOST: ${SFTP_HOST:-}
+      SFTP_PORT: ${SFTP_PORT:-22}
+      SFTP_USER: ${SFTP_USER:-}
+      SFTP_PASSWORD: ${SFTP_PASSWORD:-}
+      SFTP_REMOTE_DIR: ${SFTP_REMOTE_DIR:-/incoming}
+    ports:
+      - "${API_PORT:-8080}:8080"
+    volumes:
+      - ./services/api/data:/data
+      - ./services/api/.env:/app/.env:ro
+    networks:
+      - busk-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  mysql_data:
+
+networks:
+  busk-network:
+    driver: bridge
