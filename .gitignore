@@ -1,0 +1,21 @@
+# SSH credentials
+connect-ssh.sh
+
+# Environment
+.env
+.env.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Build outputs
+dist/
+build/
+*.o
+
+# Dependencies
+node_modules/

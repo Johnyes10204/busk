@@ -53,30 +53,30 @@ type FilePendingValidation struct {
 }
 
 type FileValidationReport struct {
-	FileID                  string                  `json:"file_id"`
-	FileName                string                  `json:"file_name"`
-	ProductID               string                  `json:"product_id,omitempty"`
-	FileStatus              string                  `json:"file_status"`
-	ErrorReason             string                  `json:"error_reason,omitempty"`
-	ProcessedAt             string                  `json:"processed_at,omitempty"`
-	PolicyRowCount          int                     `json:"policy_row_count"`
-	DuplicateCredits        []FileDuplicateCredit   `json:"duplicate_credits"`
-	TotalDuplicateCredits   int                     `json:"total_duplicate_credits"`
-	TotalDuplicateRows      int                     `json:"total_duplicate_rows"`
-	PendingValidations           []FilePendingValidation `json:"pending_validations"`
-	TotalPendingValidations      int                     `json:"total_pending_validations"`
-	InformativeValidations       []FilePendingValidation `json:"informative_validations,omitempty"`
-	TotalInformativeValidations  int                     `json:"total_informative_validations"`
-	SourceColumns                []string                `json:"source_columns,omitempty"`
-	ExportedRows                 []FileExportedRow       `json:"exported_rows,omitempty"`
-	EmailSourceColumns           []string                `json:"email_source_columns,omitempty"`
-	EmailExportedRows            []FileExportedRow       `json:"email_exported_rows,omitempty"`
+	FileID                      string                  `json:"file_id"`
+	FileName                    string                  `json:"file_name"`
+	ProductID                   string                  `json:"product_id,omitempty"`
+	FileStatus                  string                  `json:"file_status"`
+	ErrorReason                 string                  `json:"error_reason,omitempty"`
+	ProcessedAt                 string                  `json:"processed_at,omitempty"`
+	PolicyRowCount              int                     `json:"policy_row_count"`
+	DuplicateCredits            []FileDuplicateCredit   `json:"duplicate_credits"`
+	TotalDuplicateCredits       int                     `json:"total_duplicate_credits"`
+	TotalDuplicateRows          int                     `json:"total_duplicate_rows"`
+	PendingValidations          []FilePendingValidation `json:"pending_validations"`
+	TotalPendingValidations     int                     `json:"total_pending_validations"`
+	InformativeValidations      []FilePendingValidation `json:"informative_validations,omitempty"`
+	TotalInformativeValidations int                     `json:"total_informative_validations"`
+	SourceColumns               []string                `json:"source_columns,omitempty"`
+	ExportedRows                []FileExportedRow       `json:"exported_rows,omitempty"`
+	EmailSourceColumns          []string                `json:"email_source_columns,omitempty"`
+	EmailExportedRows           []FileExportedRow       `json:"email_exported_rows,omitempty"`
 }
 
 func NewMySQLFromEnv() (*Store, error) {
 	dsn := os.Getenv("MYSQL_DSN")
 	if dsn == "" {
-		dsn = "root@tcp(127.0.0.1:3306)/busk?parseTime=true&multiStatements=true"
+		dsn = "root:TU_CONTRASEÑA_AQUI@tcp(127.0.0.1:3306)/busk?parseTime=true&multiStatements=true"
 
 	}
 	db, err := sql.Open("mysql", dsn)
