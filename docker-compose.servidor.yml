@@ -1,0 +1,57 @@
+version: "3.9"
+
+# Docker Compose para servidor con MySQL ya instalado
+# Uso: docker-compose -f docker-compose.servidor.yml up -d
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: busk-api
+    restart: unless-stopped
+
+    environment:
+      # ⭐ Conecta a MySQL del servidor (NO en Docker)
+      MYSQL_DSN: "busk:busk123@tcp(localhost:3306)/busk?parseTime=true&multiStatements=true"
+
+      PROCESSOR_WORKERS: ${PROCESSOR_WORKERS:-2}
+      PROCESSOR_READ_FULL_FILE_ON_ROW_ERRORS: ${PROCESSOR_READ_FULL_FILE_ON_ROW_ERRORS:-false}
+
+      FILES_ARCHIVE_DIR: ${FILES_ARCHIVE_DIR:-/data/files-archive}
+      REPORTS_ARCHIVE_DIR: ${REPORTS_ARCHIVE_DIR:-/data/reports-archive}
+
+      # SFTP (datos de aseguradoras)
+      SFTP_HOST: ${SFTP_HOST:-}
+      SFTP_PORT: ${SFTP_PORT:-22}
+      SFTP_USER: ${SFTP_USER:-}
+      SFTP_PASSWORD: ${SFTP_PASSWORD:-}
+      SFTP_REMOTE_DIR: ${SFTP_REMOTE_DIR:-/incoming}
+
+      # Email (opcional - para notificaciones)
+      SENDGRID_API_KEY: ${SENDGRID_API_KEY:-}
+      SENDGRID_FROM_EMAIL: ${SENDGRID_FROM_EMAIL:-}
+      SENDGRID_ERROR_TO_EMAILS: ${SENDGRID_ERROR_TO_EMAILS:-}
+
+    ports:
+      - "${API_PORT:-8080}:8080"
+
+    volumes:
+      - ./services/api/data:/data
+      - ./services/api/.env:/app/.env:ro
+
+    # ⭐ Acceder a localhost del servidor (para MySQL local)
+    network_mode: "host"
+
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      start-period: 10s
+      retries: 3
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
