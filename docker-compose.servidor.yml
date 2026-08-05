@@ -13,7 +13,7 @@ services:
 
     environment:
       # ⭐ Conecta a MySQL del servidor (NO en Docker)
-      MYSQL_DSN: "root:TU_CONTRASEÑA_AQUItcp(localhost:3306)/busk?parseTime=true&multiStatements=true"
+      MYSQL_DSN: "root:TU_CONTRASEÑA_AQUI@tcp(localhost:3306)/busk?parseTime=true&multiStatements=true"
 
       PROCESSOR_WORKERS: ${PROCESSOR_WORKERS:-2}
       PROCESSOR_READ_FULL_FILE_ON_ROW_ERRORS: ${PROCESSOR_READ_FULL_FILE_ON_ROW_ERRORS:-false}
