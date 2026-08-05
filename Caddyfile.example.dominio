@@ -1,0 +1,14 @@
+# Caddyfile - Con Dominio (Let's Encrypt automático)
+# Copiar a Caddyfile y reemplazar dominio
+
+api.busk.com {
+	reverse_proxy http://api:8080 {
+		header_up X-Forwarded-For {http.request.remote.host}
+		header_up X-Forwarded-Proto {http.request.proto}
+		header_up X-Forwarded-Host {http.request.host}
+	}
+	log {
+		output stdout
+		format json
+	}
+}

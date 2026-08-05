@@ -1,6 +1,6 @@
 version: "3.9"
 
-# Docker Compose para servidor con MySQL ya instalado
+# Docker Compose para servidor con MySQL ya instalado + Caddy reverse proxy HTTPS
 # Uso: docker-compose -f docker-compose.servidor.yml up -d
 
 services:
@@ -33,8 +33,9 @@ services:
       SENDGRID_FROM_EMAIL: ${SENDGRID_FROM_EMAIL:-}
       SENDGRID_ERROR_TO_EMAILS: ${SENDGRID_ERROR_TO_EMAILS:-}
 
-    ports:
-      - "${API_PORT:-8080}:8080"
+    # ⭐ NO mapear puerto aquí - Caddy lo expone
+    # ports:
+    #   - "${API_PORT:-8080}:8080"
 
     volumes:
       - ./services/api/data:/data
@@ -54,3 +55,34 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: busk-caddy
+    restart: unless-stopped
+
+    ports:
+      - "8081:8081"
+      - "80:80"
+      - "443:443"
+
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+    environment:
+      ACME_AGREE: "true"
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Caddy se conecta a API via localhost (network_mode host en API)
+    network_mode: "host"
+
+volumes:
+  caddy-data:
+  caddy-config:

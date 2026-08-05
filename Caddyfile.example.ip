@@ -1,0 +1,15 @@
+# Caddyfile - Con IP + Puerto
+# Copiar a Caddyfile
+# Acceso: https://62.146.228.79:8081/api/health (ignorar error SSL con -k en curl)
+
+:8081 {
+	reverse_proxy http://api:8080 {
+		header_up X-Forwarded-For {http.request.remote.host}
+		header_up X-Forwarded-Proto {http.request.proto}
+		header_up X-Forwarded-Host {http.request.host}
+	}
+	log {
+		output stdout
+		format json
+	}
+}

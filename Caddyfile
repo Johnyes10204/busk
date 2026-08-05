@@ -1,0 +1,24 @@
+# Caddy reverse proxy para Busk Seguros API
+# Edita el dominio/IP y puerto según corresponda
+
+# Cambiar esto a tu dominio o IP
+# Ejemplos:
+#   - api.busk.com
+#   - 62.146.228.79:8081
+#   - localhost:8081
+
+:8081 {
+	# Reverse proxy a la API (en red Docker interna)
+	reverse_proxy http://api:8080 {
+		# Headers para preservar información original
+		header_up X-Forwarded-For {http.request.remote.host}
+		header_up X-Forwarded-Proto {http.request.proto}
+		header_up X-Forwarded-Host {http.request.host}
+	}
+
+	# Logs
+	log {
+		output stdout
+		format json
+	}
+}
