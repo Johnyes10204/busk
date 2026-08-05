@@ -14,7 +14,7 @@ module.exports = {
         FILES_ARCHIVE_DIR: './services/api/data/files-archive',
         REPORTS_ARCHIVE_DIR: './services/api/data/reports-archive',
         SFTP_HOST: '',
-        SFTP_PORT: '22',
+        SFTP_PORT: '2222',
         SFTP_USER: '',
         SFTP_PASSWORD: '',
         SFTP_REMOTE_DIR: '/incoming',

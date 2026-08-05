@@ -1,37 +1,14 @@
 {
   "info": {
     "name": "Busk Seguros API",
-    "description": "Colección completa y operativa paso a paso para el flujo E2E: bootstrap de productos/parametrías, gestión de primas permitidas, scan SFTP, seguimiento de progreso, consulta de archivos, descarga del archivo archivado, y consultas de pólizas (listado + búsqueda paginada). Incluye carpeta '00 - Flujo E2E Paso a Paso' para ejecutar en orden.",
+    "description": "Colección Postman completa y operativa del API de Busk Seguros (ingesta de pólizas MAPFRE / BOLÍVAR desde SFTP).\n\nIncluye:\n- Flujo E2E paso a paso (Health → Bootstrap → Scan → Progress → Files → Policies) con tests que auto-capturan `fileId` desde `GET /files` para encadenar los pasos siguientes.\n- Todos los endpoints expuestos por `services/api/main.go`, agrupados por dominio: Health, Bootstrap, Products (legacy), Product Formats (multi-formato por producto), Allowed Premiums, Processing, Files (incl. reporte de validación JSON/CSV/XLSX y descarga del archivo original), Policies (listado + búsqueda paginada).\n\nVariables a personalizar:\n- `baseUrl` — por defecto `http://localhost:8080` (dev). En producción usar `http://<host>` (API escucha en `:80`).\n- `productId` — producto seed a probar (ej. `mapfre_vida`, `bolivar_stock`).\n- `productFormatId`, `fileId`, `creditNumber`, `documentNumber`, `policyStatus`, `page`, `pageSize`, `limit`, `premiumValue`, `localDir`.\n\nLos mensajes de error, tags de validación y logs del backend están en español — mantener ese idioma para pruebas.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
     "_postman_id": "3f9a5ef1-busk-seguros-api-collection"
   },
   "item": [
     {
-      "name": "Health",
-      "item": [
-        {
-          "name": "GET Health",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/health",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "health"
-              ]
-            },
-            "description": "Verifica que el API está arriba."
-          }
-        }
-      ]
-    },
-    {
       "name": "00 - Flujo E2E Paso a Paso",
+      "description": "Ejecutar en orden. Los pasos 07 y 08 auto-guardan la variable `fileId` con el primer archivo listado por `GET /files`, para que los pasos siguientes de resumen / reporte / descarga funcionen sin editar variables a mano.",
       "item": [
         {
           "name": "Paso 01 - GET Health",
@@ -40,14 +17,8 @@
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/api/v1/health",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "health"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "health"]
             },
             "description": "Valida que el API esté arriba antes del flujo."
           }
@@ -59,17 +30,10 @@
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/api/v1/bootstrap/sample-products",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "bootstrap",
-                "sample-products"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "bootstrap", "sample-products"]
             },
-            "description": "Carga/actualiza seed de productos y parámetros en BD."
+            "description": "Carga / actualiza la semilla de productos y formatos MAPFRE + BOLÍVAR (Anexos 1..5, Stock, Anulación masiva) y parámetros globales."
           }
         },
         {
@@ -79,247 +43,249 @@
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/api/v1/products",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "products"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "products"]
             },
-            "description": "Verifica productos configurados (incluye STOCK_MAPFRE y STOCK-)."
+            "description": "Verifica productos configurados."
           }
         },
         {
-          "name": "Paso 04 - GET Allowed Premiums by Product",
+          "name": "Paso 04 - GET Product Formats por Producto",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/product-formats?product_id={{productId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "product-formats"],
+              "query": [
+                { "key": "product_id", "value": "{{productId}}" }
+              ]
+            },
+            "description": "Lista los formatos (archivos aceptados) asociados a un `product_id`. Omitir `product_id` para listar todos."
+          }
+        },
+        {
+          "name": "Paso 05 - GET Allowed Premiums by Product",
           "request": {
             "method": "GET",
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/api/v1/products/allowed-premiums?product_id={{productId}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "products",
-                "allowed-premiums"
-              ],
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "products", "allowed-premiums"],
               "query": [
-                {
-                  "key": "product_id",
-                  "value": "{{productId}}"
-                }
+                { "key": "product_id", "value": "{{productId}}" }
               ]
             },
             "description": "Confirma catálogo de primas permitidas del producto."
           }
         },
         {
-          "name": "Paso 05 - POST Scan and Enqueue",
+          "name": "Paso 06 - POST Scan and Enqueue (SFTP)",
           "request": {
             "method": "POST",
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/api/v1/process/scan",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "process",
-                "scan"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "process", "scan"]
             },
-            "description": "Escanea SFTP y encola archivos para procesamiento asíncrono (workers)."
+            "description": "Escanea el SFTP y encola archivos (STOCK primero, luego INCLUSIÓN, luego resto) para procesamiento asíncrono con workers."
           }
         },
         {
-          "name": "Paso 06 - GET Process Progress",
+          "name": "Paso 07 - GET Process Progress",
           "request": {
             "method": "GET",
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/api/v1/process/progress",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "process",
-                "progress"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "process", "progress"]
             },
-            "description": "Monitorea avance hasta estado final por file_id."
+            "description": "Monitorea avance en memoria (etapa y porcentaje) hasta que todos los items terminen. Repetir hasta ver estados finales."
           }
         },
         {
-          "name": "Paso 07 - GET List Files",
+          "name": "Paso 08 - GET List Files (auto-guarda fileId)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "try {",
+                  "  const arr = pm.response.json();",
+                  "  if (Array.isArray(arr) && arr.length > 0) {",
+                  "    const first = arr[0];",
+                  "    if (first && first.id) {",
+                  "      pm.collectionVariables.set('fileId', first.id);",
+                  "      console.log('fileId capturado:', first.id, '-', first.file_name);",
+                  "    }",
+                  "  } else {",
+                  "    console.warn('No hay archivos aún. Ejecutar Paso 06 (scan) y esperar el progreso.');",
+                  "  }",
+                  "} catch (e) {",
+                  "  console.warn('No se pudo parsear respuesta:', e);",
+                  "}"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "GET",
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/api/v1/files",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "files"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "files"]
             },
-            "description": "Obtiene resultado final, hash y rutas (SFTP + archive_path local)."
+            "description": "Devuelve historial de archivos ingeridos. El test auto-captura el `id` del primer archivo en la variable `fileId` para los pasos siguientes."
           }
         },
         {
-          "name": "Paso 08 - GET File Summary",
+          "name": "Paso 09 - GET File Summary",
           "request": {
             "method": "GET",
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/api/v1/files/summary?file_id={{fileId}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "files",
-                "summary"
-              ],
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "files", "summary"],
               "query": [
-                {
-                  "key": "file_id",
-                  "value": "{{fileId}}"
-                }
+                { "key": "file_id", "value": "{{fileId}}" }
               ]
             },
-            "description": "Resumen de calidad por archivo procesado."
+            "description": "Resumen de calidad del archivo: conteos por estado (ACTIVE / FROZEN / MANUAL_REVIEW / CANCELLED) y totales."
           }
         },
         {
-          "name": "Paso 09 - GET Download Processed File",
+          "name": "Paso 10 - GET Validation Report (JSON)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/files/validation-report?file_id={{fileId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "files", "validation-report"],
+              "query": [
+                { "key": "file_id", "value": "{{fileId}}" }
+              ]
+            },
+            "description": "Reporte completo de validaciones por fila (novedades / bloqueos / tags como `REVISAR PRIMA (PLAN)`)."
+          }
+        },
+        {
+          "name": "Paso 11 - GET Validation Report (XLSX)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/files/validation-xlsx?file_id={{fileId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "files", "validation-xlsx"],
+              "query": [
+                { "key": "file_id", "value": "{{fileId}}" }
+              ]
+            },
+            "description": "Descarga el XLSX espejo del reporte de validaciones (mismo adjunto que envía el correo). Preferir 'Send and Download' en Postman."
+          }
+        },
+        {
+          "name": "Paso 12 - GET Download Processed File (original)",
           "request": {
             "method": "GET",
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/api/v1/files/download?file_id={{fileId}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "files",
-                "download"
-              ],
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "files", "download"],
               "query": [
-                {
-                  "key": "file_id",
-                  "value": "{{fileId}}"
-                }
+                { "key": "file_id", "value": "{{fileId}}" }
               ]
             },
-            "description": "Descarga el archivo archivado local asociado al file_id."
+            "description": "Descarga el archivo original archivado localmente (`FILES_ARCHIVE_DIR`) asociado al `file_id`."
           }
         },
         {
-          "name": "Paso 10 - GET Policies Search by Document",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/policies/search?document_number={{documentNumber}}&page={{page}}&page_size={{pageSize}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "policies",
-                "search"
-              ],
-              "query": [
-                {
-                  "key": "document_number",
-                  "value": "{{documentNumber}}"
-                },
-                {
-                  "key": "page",
-                  "value": "{{page}}"
-                },
-                {
-                  "key": "page_size",
-                  "value": "{{pageSize}}"
-                }
-              ]
-            },
-            "description": "Consulta pólizas por documento, con paginación."
-          }
-        },
-        {
-          "name": "Paso 11 - GET Policies by Product and Status",
+          "name": "Paso 13 - GET Policies by Product and Status",
           "request": {
             "method": "GET",
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/api/v1/policies?product_id={{productId}}&status={{policyStatus}}&limit={{limit}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "policies"
-              ],
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "policies"],
               "query": [
-                {
-                  "key": "product_id",
-                  "value": "{{productId}}"
-                },
-                {
-                  "key": "status",
-                  "value": "{{policyStatus}}"
-                },
-                {
-                  "key": "limit",
-                  "value": "{{limit}}"
-                }
+                { "key": "product_id", "value": "{{productId}}" },
+                { "key": "status", "value": "{{policyStatus}}" },
+                { "key": "limit", "value": "{{limit}}" }
               ]
             },
-            "description": "Valida estados finales (ACTIVE/FROZEN/MANUAL_REVIEW/CANCELLED)."
+            "description": "Valida estados finales de pólizas (ACTIVE / FROZEN / MANUAL_REVIEW / CANCELLED)."
+          }
+        },
+        {
+          "name": "Paso 14 - GET Policies Search by Document (paginado)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/policies/search?document_number={{documentNumber}}&page={{page}}&page_size={{pageSize}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "policies", "search"],
+              "query": [
+                { "key": "document_number", "value": "{{documentNumber}}" },
+                { "key": "page", "value": "{{page}}" },
+                { "key": "page_size", "value": "{{pageSize}}" }
+              ]
+            },
+            "description": "Consulta pólizas por número de documento. Paginado; usar `total_pages` / `has_next_page` de la respuesta."
           }
         }
       ]
     },
     {
-      "name": "Products",
+      "name": "Health",
       "item": [
         {
-          "name": "POST Bootstrap Sample Products",
+          "name": "GET Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "health"]
+            },
+            "description": "Verifica que el API está arriba. Devuelve `{ status: ok, time: <RFC3339 UTC> }`."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Bootstrap",
+      "item": [
+        {
+          "name": "POST Bootstrap Sample Products (seed)",
           "request": {
             "method": "POST",
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/api/v1/bootstrap/sample-products",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "bootstrap",
-                "sample-products"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "bootstrap", "sample-products"]
             },
-            "description": "Carga productos semilla MAPFRE y BOLIVAR con mappings y reglas iniciales."
+            "description": "Ejecuta `seed(st)` en el backend: inserta / actualiza productos, formatos, mappings y reglas de MAPFRE (Vida Voluntario, AP Menores, AP Cáncer, Stock, Anulación masiva) y BOLÍVAR (Deudores Banco, Deudores ESAL + Stock)."
           }
-        },
+        }
+      ]
+    },
+    {
+      "name": "Products (legacy)",
+      "description": "Endpoints del catálogo de productos. Los formatos (multi-archivo por producto) viven en la sección 'Product Formats'.",
+      "item": [
         {
           "name": "GET List Products",
           "request": {
@@ -327,134 +293,185 @@
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/api/v1/products",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "products"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "products"]
             },
             "description": "Lista productos configurados."
           }
         },
         {
-          "name": "POST Upsert Product",
+          "name": "POST Upsert Product - MAPFRE Vida Voluntario",
           "request": {
             "method": "POST",
             "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
+              { "key": "Content-Type", "value": "application/json" }
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"id\": \"mapfre_vida_custom\",\n  \"code\": \"MAPFRE_VIDA\",\n  \"insurer\": \"MAPFRE\",\n  \"file_prefix\": \"INCLUSION-VIDA-MAPFRE\",\n  \"sheet_name\": \"Hoja1\",\n  \"header_row\": 1,\n  \"mappings\": [\n    { \"canonical_field\": \"document_number\", \"source_header\": \"IDENTIFICACIONAFILIADO\", \"required\": true },\n    { \"canonical_field\": \"birth_date\", \"source_header\": \"FECHANACIMIENTO\", \"required\": true },\n    { \"canonical_field\": \"monthly_premium\", \"source_header\": \"PRIMAMENSUALPERIODO\", \"required\": true },\n    { \"canonical_field\": \"credit_number\", \"source_header\": \"NUMEROPRESTAMO\", \"required\": true },\n    { \"canonical_field\": \"coverage_start_date\", \"source_header\": \"FECHA INICIO DE VIGENCIA\", \"required\": true },\n    { \"canonical_field\": \"coverage_end_date\", \"source_header\": \"FECHAFINVIGENCIADERIESGO REAL\", \"required\": true },\n    { \"canonical_field\": \"initial_term_months\", \"source_header\": \"PLAZO INICIAL\", \"required\": true },\n    { \"canonical_field\": \"plan_name\", \"source_header\": \"NOMBREPLAN\", \"required\": false },\n    { \"canonical_field\": \"plan_code\", \"source_header\": \"CODIGO SEGURO\", \"required\": false },\n    { \"canonical_field\": \"office\", \"source_header\": \"OFICINA\", \"required\": false }\n  ],\n  \"rules\": [\n    { \"type\": \"required_not_empty\", \"field\": \"document_number\", \"params\": {} },\n    { \"type\": \"required_not_empty\", \"field\": \"birth_date\", \"params\": {} },\n    { \"type\": \"required_not_empty\", \"field\": \"credit_number\", \"params\": {} },\n    { \"type\": \"number_gte\", \"field\": \"monthly_premium\", \"params\": { \"min\": 0 } },\n    { \"type\": \"freeze_on_zero_premium\", \"field\": \"monthly_premium\", \"params\": {} }\n  ]\n}"
+              "raw": "{\n  \"id\": \"mapfre_vida_custom\",\n  \"code\": \"MAPFRE_VIDA\",\n  \"insurer\": \"MAPFRE\",\n  \"sheet_name\": \"Hoja1\",\n  \"header_row\": 1,\n  \"mappings\": [\n    { \"canonical_field\": \"document_number\", \"source_header\": \"IDENTIFICACIONAFILIADO\", \"required\": true },\n    { \"canonical_field\": \"birth_date\", \"source_header\": \"FECHANACIMIENTO\", \"required\": true },\n    { \"canonical_field\": \"monthly_premium\", \"source_header\": \"PRIMAMENSUALPERIODO\", \"required\": true },\n    { \"canonical_field\": \"credit_number\", \"source_header\": \"NUMEROPRESTAMO\", \"required\": true },\n    { \"canonical_field\": \"activation_date\", \"source_header\": \"FECHA ADJUDICACION\", \"required\": true },\n    { \"canonical_field\": \"coverage_start_date\", \"source_header\": \"FECHA INICIO DE VIGENCIA\", \"required\": true },\n    { \"canonical_field\": \"coverage_end_date\", \"source_header\": \"FECHAFINVIGENCIADERIESGO REAL\", \"required\": true },\n    { \"canonical_field\": \"initial_term_months\", \"source_header\": \"PLAZO INICIAL\", \"required\": true },\n    { \"canonical_field\": \"plan_name\", \"source_header\": \"NOMBREPLAN\", \"required\": false },\n    { \"canonical_field\": \"plan_code\", \"source_header\": \"CODIGO SEGURO\", \"required\": false },\n    { \"canonical_field\": \"office\", \"source_header\": \"OFICINA\", \"required\": false }\n  ],\n  \"rules\": [\n    { \"type\": \"required_not_empty\", \"field\": \"document_number\", \"params\": {} },\n    { \"type\": \"required_not_empty\", \"field\": \"birth_date\", \"params\": {} },\n    { \"type\": \"required_not_empty\", \"field\": \"credit_number\", \"params\": {} },\n    { \"type\": \"number_gte\", \"field\": \"monthly_premium\", \"params\": { \"min\": 0 } },\n    { \"type\": \"freeze_on_zero_premium\", \"field\": \"monthly_premium\", \"params\": {} }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/v1/products",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "products"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "products"]
             },
-            "description": "Crea o actualiza un producto con mappings y reglas."
+            "description": "Crea o actualiza un producto MAPFRE Vida Voluntario. El backend ignora `file_prefix` a nivel de producto (usar 'Product Formats' para asociar archivos)."
           }
         },
         {
-          "name": "POST Upsert Product - MAPFRE (con FROZEN por prima 0)",
+          "name": "POST Upsert Product - MAPFRE AP Menores",
           "request": {
             "method": "POST",
             "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
+              { "key": "Content-Type", "value": "application/json" }
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"id\": \"mapfre_acc_men_cfg\",\n  \"code\": \"MAPFRE_ACC_MEN\",\n  \"insurer\": \"MAPFRE\",\n  \"file_prefix\": \"INCLUSION-ACCIDEMENOR-MAPFRE\",\n  \"sheet_name\": \"Hoja1\",\n  \"header_row\": 1,\n  \"mappings\": [\n    { \"canonical_field\": \"document_number\", \"source_header\": \"NUM DOCUM\", \"required\": true },\n    { \"canonical_field\": \"birth_date\", \"source_header\": \"FECHA NAC\", \"required\": true },\n    { \"canonical_field\": \"monthly_premium\", \"source_header\": \"PRIMA\", \"required\": true },\n    { \"canonical_field\": \"credit_number\", \"source_header\": \"NUMERO DE CREDITO\", \"required\": true },\n    { \"canonical_field\": \"insured_amount\", \"source_header\": \"VALOR ASEGURADO\", \"required\": false },\n    { \"canonical_field\": \"coverage_start_date\", \"source_header\": \"FECHA INICIO DE VIGENCIA\", \"required\": true },\n    { \"canonical_field\": \"coverage_end_date\", \"source_header\": \"FECHAFINVIGENCIADERIESGO REAL\", \"required\": true },\n    { \"canonical_field\": \"plan_name\", \"source_header\": \"PLAN\", \"required\": false },\n    { \"canonical_field\": \"plan_code\", \"source_header\": \"COD PLAN\", \"required\": false },\n    { \"canonical_field\": \"office\", \"source_header\": \"OFICINA\", \"required\": false }\n  ],\n  \"rules\": [\n    { \"type\": \"required_not_empty\", \"field\": \"document_number\", \"params\": {} },\n    { \"type\": \"required_not_empty\", \"field\": \"birth_date\", \"params\": {} },\n    { \"type\": \"required_not_empty\", \"field\": \"credit_number\", \"params\": {} },\n    { \"type\": \"number_gte\", \"field\": \"monthly_premium\", \"params\": { \"min\": 0 } },\n    { \"type\": \"freeze_on_zero_premium\", \"field\": \"monthly_premium\", \"params\": {} }\n  ]\n}"
+              "raw": "{\n  \"id\": \"mapfre_acc_men_cfg\",\n  \"code\": \"MAPFRE_ACC_MEN\",\n  \"insurer\": \"MAPFRE\",\n  \"sheet_name\": \"Hoja1\",\n  \"header_row\": 1,\n  \"mappings\": [\n    { \"canonical_field\": \"document_number\", \"source_header\": \"NUM DOCUM\", \"required\": true },\n    { \"canonical_field\": \"birth_date\", \"source_header\": \"FECHA NAC\", \"required\": true },\n    { \"canonical_field\": \"monthly_premium\", \"source_header\": \"PRIMA\", \"required\": true },\n    { \"canonical_field\": \"credit_number\", \"source_header\": \"NUMERO DE CREDITO\", \"required\": true },\n    { \"canonical_field\": \"activation_date\", \"source_header\": \"FECHA ADJUDICACION\", \"required\": true },\n    { \"canonical_field\": \"insured_amount\", \"source_header\": \"VALOR ASEGURADO\", \"required\": false },\n    { \"canonical_field\": \"coverage_start_date\", \"source_header\": \"FECHA INICIO DE VIGENCIA\", \"required\": true },\n    { \"canonical_field\": \"coverage_end_date\", \"source_header\": \"FECHAFINVIGENCIADERIESGO REAL\", \"required\": true },\n    { \"canonical_field\": \"plan_name\", \"source_header\": \"PLAN\", \"required\": false },\n    { \"canonical_field\": \"plan_code\", \"source_header\": \"COD PLAN\", \"required\": false },\n    { \"canonical_field\": \"office\", \"source_header\": \"OFICINA\", \"required\": false }\n  ],\n  \"rules\": [\n    { \"type\": \"required_not_empty\", \"field\": \"document_number\", \"params\": {} },\n    { \"type\": \"required_not_empty\", \"field\": \"birth_date\", \"params\": {} },\n    { \"type\": \"required_not_empty\", \"field\": \"credit_number\", \"params\": {} },\n    { \"type\": \"number_gte\", \"field\": \"monthly_premium\", \"params\": { \"min\": 0 } },\n    { \"type\": \"freeze_on_zero_premium\", \"field\": \"monthly_premium\", \"params\": {} }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/v1/products",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "products"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "products"]
             },
-            "description": "Ejemplo de producto MAPFRE con politica FROZEN configurable desde BD."
+            "description": "Ejemplo MAPFRE con `freeze_on_zero_premium` (prima 0 → FROZEN)."
           }
         },
         {
-          "name": "POST Upsert Product - BOLIVAR (sin FROZEN, prima >= 0)",
+          "name": "POST Upsert Product - BOLIVAR Stock",
           "request": {
             "method": "POST",
             "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
+              { "key": "Content-Type", "value": "application/json" }
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"id\": \"bolivar_stock_cfg\",\n  \"code\": \"BOLIVAR_STOCK\",\n  \"insurer\": \"BOLIVAR\",\n  \"file_prefix\": \"STOCK-\",\n  \"sheet_name\": \"FACTURACION FEBRERO 2026\",\n  \"header_row\": 1,\n  \"mappings\": [\n    { \"canonical_field\": \"document_number\", \"source_header\": \"IDENTIFICACION\", \"required\": true },\n    { \"canonical_field\": \"birth_date\", \"source_header\": \"FECHA DE NACIMIENTO\", \"required\": true },\n    { \"canonical_field\": \"credit_number\", \"source_header\": \"OP BT\", \"required\": true },\n    { \"canonical_field\": \"initial_debt_amount\", \"source_header\": \"DEUDA INICIAL\", \"required\": true },\n    { \"canonical_field\": \"monthly_premium\", \"source_header\": \"PRIMA MENSUAL\", \"required\": true },\n    { \"canonical_field\": \"rate_percent\", \"source_header\": \"%\", \"required\": true },\n    { \"canonical_field\": \"loan_award_date\", \"source_header\": \"FECHA ADJUDICACION\", \"required\": true },\n    { \"canonical_field\": \"loan_due_date_current\", \"source_header\": \"FECHA VENCIMIENTO ACTUAL\", \"required\": true }\n  ],\n  \"rules\": [\n    { \"type\": \"required_not_empty\", \"field\": \"credit_number\", \"params\": {} },\n    { \"type\": \"number_gt\", \"field\": \"initial_debt_amount\", \"params\": { \"min\": 0 } },\n    { \"type\": \"number_gte\", \"field\": \"monthly_premium\", \"params\": { \"min\": 0 } }\n  ]\n}"
+              "raw": "{\n  \"id\": \"bolivar_stock_cfg\",\n  \"code\": \"BOLIVAR_STOCK\",\n  \"insurer\": \"BOLIVAR\",\n  \"sheet_name\": \"FACTURACION FEBRERO 2026\",\n  \"header_row\": 1,\n  \"mappings\": [\n    { \"canonical_field\": \"document_number\", \"source_header\": \"IDENTIFICACION\", \"required\": true },\n    { \"canonical_field\": \"birth_date\", \"source_header\": \"FECHA DE NACIMIENTO\", \"required\": true },\n    { \"canonical_field\": \"credit_number\", \"source_header\": \"OP BT\", \"required\": true },\n    { \"canonical_field\": \"initial_debt_amount\", \"source_header\": \"DEUDA INICIAL\", \"required\": true },\n    { \"canonical_field\": \"monthly_premium\", \"source_header\": \"PRIMA MENSUAL\", \"required\": true },\n    { \"canonical_field\": \"rate_percent\", \"source_header\": \"%\", \"required\": true },\n    { \"canonical_field\": \"loan_award_date\", \"source_header\": \"FECHA ADJUDICACION\", \"required\": true },\n    { \"canonical_field\": \"loan_due_date_current\", \"source_header\": \"FECHA VENCIMIENTO ACTUAL\", \"required\": true },\n    { \"canonical_field\": \"activation_date\", \"source_header\": \"FECHA ADJUDICACION\", \"required\": true }\n  ],\n  \"rules\": [\n    { \"type\": \"required_not_empty\", \"field\": \"credit_number\", \"params\": {} },\n    { \"type\": \"number_gt\", \"field\": \"initial_debt_amount\", \"params\": { \"min\": 0 } },\n    { \"type\": \"number_gte\", \"field\": \"monthly_premium\", \"params\": { \"min\": 0 } }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/v1/products",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "products"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "products"]
             },
-            "description": "Ejemplo BOLIVAR: semilla con freeze_on_zero_premium (prima 0 = FROZEN). MAPFRE en semilla cancela prima 0 (sin freeze)."
+            "description": "Ejemplo BOLÍVAR sin `freeze_on_zero_premium` (prima >= 0 permitida)."
           }
         },
         {
-          "name": "POST Upsert Product - Nuevo Producto (Template)",
+          "name": "POST Upsert Product - Template genérico",
           "request": {
             "method": "POST",
             "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
+              { "key": "Content-Type", "value": "application/json" }
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"id\": \"nuevo_producto_demo\",\n  \"code\": \"NUEVO_PRODUCTO\",\n  \"insurer\": \"ASEGURADORA_X\",\n  \"file_prefix\": \"NUEVO_PREFIJO_\",\n  \"sheet_name\": \"Hoja1\",\n  \"header_row\": 1,\n  \"mappings\": [\n    { \"canonical_field\": \"document_number\", \"source_header\": \"DOCUMENTO\", \"required\": true },\n    { \"canonical_field\": \"birth_date\", \"source_header\": \"FECHA_NACIMIENTO\", \"required\": false },\n    { \"canonical_field\": \"credit_number\", \"source_header\": \"CREDITO\", \"required\": true },\n    { \"canonical_field\": \"loan_award_date\", \"source_header\": \"FECHA_ADJUDICACION\", \"required\": false },\n    { \"canonical_field\": \"loan_due_date_current\", \"source_header\": \"FECHA_VENCIMIENTO\", \"required\": false },\n    { \"canonical_field\": \"initial_debt_amount\", \"source_header\": \"DEUDA_INICIAL\", \"required\": false },\n    { \"canonical_field\": \"rate_percent\", \"source_header\": \"TASA\", \"required\": false },\n    { \"canonical_field\": \"monthly_premium\", \"source_header\": \"PRIMA\", \"required\": true },\n    { \"canonical_field\": \"policy_group_number\", \"source_header\": \"POLIZA_GRUPO\", \"required\": false },\n    { \"canonical_field\": \"coverage_start_date\", \"source_header\": \"FECHA_INICIO_VIGENCIA\", \"required\": false },\n    { \"canonical_field\": \"coverage_end_date\", \"source_header\": \"FECHA_FIN_VIGENCIA\", \"required\": false },\n    { \"canonical_field\": \"plan_name\", \"source_header\": \"PLAN\", \"required\": false },\n    { \"canonical_field\": \"plan_code\", \"source_header\": \"COD_PLAN\", \"required\": false },\n    { \"canonical_field\": \"office\", \"source_header\": \"OFICINA\", \"required\": false },\n    { \"canonical_field\": \"observations\", \"source_header\": \"OBSERVACIONES\", \"required\": false }\n  ],\n  \"rules\": [\n    { \"type\": \"required_not_empty\", \"field\": \"document_number\", \"params\": {} },\n    { \"type\": \"required_not_empty\", \"field\": \"credit_number\", \"params\": {} },\n    { \"type\": \"number_gte\", \"field\": \"monthly_premium\", \"params\": { \"min\": 0 } }\n  ]\n}"
+              "raw": "{\n  \"id\": \"nuevo_producto_demo\",\n  \"code\": \"NUEVO_PRODUCTO\",\n  \"insurer\": \"ASEGURADORA_X\",\n  \"sheet_name\": \"Hoja1\",\n  \"header_row\": 1,\n  \"mappings\": [\n    { \"canonical_field\": \"document_number\", \"source_header\": \"DOCUMENTO\", \"required\": true },\n    { \"canonical_field\": \"birth_date\", \"source_header\": \"FECHA_NACIMIENTO\", \"required\": false },\n    { \"canonical_field\": \"credit_number\", \"source_header\": \"CREDITO\", \"required\": true },\n    { \"canonical_field\": \"loan_award_date\", \"source_header\": \"FECHA_ADJUDICACION\", \"required\": false },\n    { \"canonical_field\": \"loan_due_date_current\", \"source_header\": \"FECHA_VENCIMIENTO\", \"required\": false },\n    { \"canonical_field\": \"initial_debt_amount\", \"source_header\": \"DEUDA_INICIAL\", \"required\": false },\n    { \"canonical_field\": \"rate_percent\", \"source_header\": \"TASA\", \"required\": false },\n    { \"canonical_field\": \"monthly_premium\", \"source_header\": \"PRIMA\", \"required\": true },\n    { \"canonical_field\": \"policy_group_number\", \"source_header\": \"POLIZA_GRUPO\", \"required\": false },\n    { \"canonical_field\": \"coverage_start_date\", \"source_header\": \"FECHA_INICIO_VIGENCIA\", \"required\": false },\n    { \"canonical_field\": \"coverage_end_date\", \"source_header\": \"FECHA_FIN_VIGENCIA\", \"required\": false },\n    { \"canonical_field\": \"plan_name\", \"source_header\": \"PLAN\", \"required\": false },\n    { \"canonical_field\": \"plan_code\", \"source_header\": \"COD_PLAN\", \"required\": false },\n    { \"canonical_field\": \"office\", \"source_header\": \"OFICINA\", \"required\": false },\n    { \"canonical_field\": \"observations\", \"source_header\": \"OBSERVACIONES\", \"required\": false }\n  ],\n  \"rules\": [\n    { \"type\": \"required_not_empty\", \"field\": \"document_number\", \"params\": {} },\n    { \"type\": \"required_not_empty\", \"field\": \"credit_number\", \"params\": {} },\n    { \"type\": \"number_gte\", \"field\": \"monthly_premium\", \"params\": { \"min\": 0 } }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/v1/products",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "products"
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "products"]
+            },
+            "description": "Template genérico para dar de alta un producto nuevo. Recuerda que los prefijos de archivo se manejan ahora en 'Product Formats'."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Product Formats",
+      "description": "Multi-formato por producto. Cada `product_format` define file_prefix, sheet, header_row, mappings y rules. El API prioriza matches por longitud de prefijo → priority → created_at.",
+      "item": [
+        {
+          "name": "GET List Product Formats (todos)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/product-formats",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "product-formats"]
+            },
+            "description": "Lista todos los formatos configurados (sin filtrar por producto)."
+          }
+        },
+        {
+          "name": "GET List Product Formats por Producto",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/product-formats?product_id={{productId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "product-formats"],
+              "query": [
+                { "key": "product_id", "value": "{{productId}}" }
               ]
             },
-            "description": "Template para crear cualquier producto nuevo con sus campos y reglas desde BD."
+            "description": "Filtra por `product_id`."
+          }
+        },
+        {
+          "name": "POST Upsert Product Format",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"mapfre_vida_formato_2026\",\n  \"product_id\": \"mapfre_vida\",\n  \"name\": \"MAPFRE Vida Voluntario - Formato 2026\",\n  \"file_prefix\": \"5024424900103\",\n  \"sheet_name\": \"Hoja1\",\n  \"header_row\": 1,\n  \"priority\": 10,\n  \"active\": true,\n  \"mappings\": [\n    { \"canonical_field\": \"document_number\", \"source_header\": \"IDENTIFICACIONAFILIADO\", \"required\": true },\n    { \"canonical_field\": \"birth_date\", \"source_header\": \"FECHANACIMIENTO\", \"required\": true },\n    { \"canonical_field\": \"credit_number\", \"source_header\": \"NUMEROPRESTAMO\", \"required\": true },\n    { \"canonical_field\": \"monthly_premium\", \"source_header\": \"PRIMAMENSUALPERIODO\", \"required\": true },\n    { \"canonical_field\": \"activation_date\", \"source_header\": \"FECHA ADJUDICACION\", \"required\": true },\n    { \"canonical_field\": \"coverage_start_date\", \"source_header\": \"FECHA INICIO DE VIGENCIA\", \"required\": true },\n    { \"canonical_field\": \"coverage_end_date\", \"source_header\": \"FECHAFINVIGENCIADERIESGO REAL\", \"required\": true },\n    { \"canonical_field\": \"initial_term_months\", \"source_header\": \"PLAZO INICIAL\", \"required\": true },\n    { \"canonical_field\": \"plan_name\", \"source_header\": \"NOMBREPLAN\", \"required\": false },\n    { \"canonical_field\": \"plan_code\", \"source_header\": \"CODIGO SEGURO\", \"required\": false }\n  ],\n  \"rules\": [\n    { \"type\": \"required_not_empty\", \"field\": \"document_number\", \"params\": {} },\n    { \"type\": \"required_not_empty\", \"field\": \"credit_number\", \"params\": {} },\n    { \"type\": \"number_gte\", \"field\": \"monthly_premium\", \"params\": { \"min\": 0 } }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/product-formats",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "product-formats"]
+            },
+            "description": "Crea o actualiza un formato asociado a un producto. `id`, `product_id`, `name` y `file_prefix` son obligatorios."
+          }
+        },
+        {
+          "name": "PATCH Toggle Product Format Active",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"{{productFormatId}}\",\n  \"active\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/product-formats/active",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "product-formats", "active"]
+            },
+            "description": "Activa o desactiva un formato sin borrarlo. Un formato inactivo no participa del matching de archivos."
+          }
+        },
+        {
+          "name": "POST Test Match (nombre de archivo + headers)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"file_name\": \"5024424900103_20260401.xlsx\",\n  \"product_id\": \"\",\n  \"headers\": [\n    \"IDENTIFICACIONAFILIADO\",\n    \"FECHANACIMIENTO\",\n    \"NUMEROPRESTAMO\",\n    \"PRIMAMENSUALPERIODO\",\n    \"FECHA ADJUDICACION\",\n    \"FECHA INICIO DE VIGENCIA\",\n    \"FECHAFINVIGENCIADERIESGO REAL\",\n    \"PLAZO INICIAL\",\n    \"NOMBREPLAN\",\n    \"CODIGO SEGURO\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/product-formats/match-test",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "product-formats", "match-test"]
+            },
+            "description": "Simula el matching de un archivo: dado un `file_name` y su fila de `headers` reales, devuelve los formatos candidatos, cuáles cumplen `required` y cuál gana. Útil para depurar por qué un archivo cae en ERROR con motivo 'sin producto configurado'."
           }
         }
       ]
     },
     {
       "name": "Allowed Premiums",
+      "description": "Catálogo de primas mensuales permitidas por producto. Consumido por reglas de validación (rechaza/etiqueta primas fuera de catálogo).",
       "item": [
         {
           "name": "GET Allowed Premiums by Product",
@@ -463,23 +480,13 @@
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/api/v1/products/allowed-premiums?product_id={{productId}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "products",
-                "allowed-premiums"
-              ],
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "products", "allowed-premiums"],
               "query": [
-                {
-                  "key": "product_id",
-                  "value": "{{productId}}"
-                }
+                { "key": "product_id", "value": "{{productId}}" }
               ]
             },
-            "description": "Consulta el catálogo de primas permitidas del producto."
+            "description": "Devuelve `{ product_id, count, premiums: number[] }`."
           }
         },
         {
@@ -487,10 +494,7 @@
           "request": {
             "method": "PUT",
             "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
+              { "key": "Content-Type", "value": "application/json" }
             ],
             "body": {
               "mode": "raw",
@@ -498,17 +502,10 @@
             },
             "url": {
               "raw": "{{baseUrl}}/api/v1/products/allowed-premiums",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "products",
-                "allowed-premiums"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "products", "allowed-premiums"]
             },
-            "description": "Reemplaza completamente la lista de primas permitidas para un producto."
+            "description": "Reemplaza el catálogo completo de primas permitidas del producto."
           }
         },
         {
@@ -516,10 +513,7 @@
           "request": {
             "method": "POST",
             "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
+              { "key": "Content-Type", "value": "application/json" }
             ],
             "body": {
               "mode": "raw",
@@ -527,17 +521,10 @@
             },
             "url": {
               "raw": "{{baseUrl}}/api/v1/products/allowed-premiums",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "products",
-                "allowed-premiums"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "products", "allowed-premiums"]
             },
-            "description": "Agrega una prima permitida puntual al producto."
+            "description": "Agrega una prima permitida puntual al catálogo del producto."
           }
         },
         {
@@ -547,27 +534,14 @@
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/api/v1/products/allowed-premiums?product_id={{productId}}&premium={{premiumValue}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "products",
-                "allowed-premiums"
-              ],
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "products", "allowed-premiums"],
               "query": [
-                {
-                  "key": "product_id",
-                  "value": "{{productId}}"
-                },
-                {
-                  "key": "premium",
-                  "value": "{{premiumValue}}"
-                }
+                { "key": "product_id", "value": "{{productId}}" },
+                { "key": "premium", "value": "{{premiumValue}}" }
               ]
             },
-            "description": "Elimina una prima permitida del catálogo del producto."
+            "description": "Elimina una prima puntual del catálogo del producto."
           }
         },
         {
@@ -577,20 +551,10 @@
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/api/v1/products/allowed-premiums?product_id={{productId}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "products",
-                "allowed-premiums"
-              ],
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "products", "allowed-premiums"],
               "query": [
-                {
-                  "key": "product_id",
-                  "value": "{{productId}}"
-                }
+                { "key": "product_id", "value": "{{productId}}" }
               ]
             },
             "description": "Limpia todo el catálogo de primas permitidas del producto."
@@ -600,25 +564,35 @@
     },
     {
       "name": "Processing",
+      "description": "Escaneo (SFTP o local) + progreso + reintento por file_id.",
       "item": [
         {
-          "name": "POST Scan and Enqueue",
+          "name": "POST Scan and Enqueue (SFTP)",
           "request": {
             "method": "POST",
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/api/v1/process/scan",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "process",
-                "scan"
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "process", "scan"]
+            },
+            "description": "Lista el SFTP configurado, prioriza STOCK → INCLUSION → resto y encola procesamiento asíncrono con workers (`PROCESSOR_WORKERS`)."
+          }
+        },
+        {
+          "name": "POST Scan and Enqueue Local (sin SFTP)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/process/scan-local?dir={{localDir}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "process", "scan-local"],
+              "query": [
+                { "key": "dir", "value": "{{localDir}}", "description": "Ruta local. Si se omite, usa FILES_ARCHIVE_DIR (por defecto ./data/files-archive)." }
               ]
             },
-            "description": "Escanea SFTP, prioriza STOCK y encola procesamiento asíncrono (uno a la vez)."
+            "description": "Escanea archivos desde un directorio local (útil para reproducir cargas sin depender del SFTP). Devuelve `enqueued` y `dir` usado."
           }
         },
         {
@@ -628,41 +602,62 @@
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/api/v1/process/progress",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "process",
-                "progress"
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "process", "progress"]
+            },
+            "description": "Snapshot en memoria del avance por archivo (etapa, porcentaje, estado)."
+          }
+        },
+        {
+          "name": "POST Retry File",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/files/retry?file_id={{fileId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "files", "retry"],
+              "query": [
+                { "key": "file_id", "value": "{{fileId}}" }
               ]
             },
-            "description": "Devuelve progreso por archivo con porcentaje y etapa."
+            "description": "Reencola un archivo previamente procesado (por su `file_id`). Devuelve el `new_file_id` de la nueva ejecución."
           }
         }
       ]
     },
     {
       "name": "Files",
+      "description": "Consulta de archivos procesados, resumen de calidad, reporte de validaciones (JSON / CSV / XLSX) y descarga del archivo original archivado localmente.",
       "item": [
         {
           "name": "GET List Files",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "try {",
+                  "  const arr = pm.response.json();",
+                  "  if (Array.isArray(arr) && arr.length > 0 && arr[0].id) {",
+                  "    pm.collectionVariables.set('fileId', arr[0].id);",
+                  "    console.log('fileId capturado:', arr[0].id);",
+                  "  }",
+                  "} catch (e) { console.warn(e); }"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "GET",
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/api/v1/files",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "files"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "files"]
             },
-            "description": "Lista archivos procesados con estado final (incl. SKIPPED por hash duplicado cuando aplica)."
+            "description": "Lista archivos procesados con estado final: PENDING / QUEUED / PROCESSING / PROCESSED / SKIPPED (hash duplicado) / ERROR. Incluye `archive_path`, `report_archive_path`, `file_hash` (SHA-256), motivos, etc. El script auto-guarda `fileId` con el primer resultado."
           }
         },
         {
@@ -672,55 +667,84 @@
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/api/v1/files/summary?file_id={{fileId}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "files",
-                "summary"
-              ],
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "files", "summary"],
               "query": [
-                {
-                  "key": "file_id",
-                  "value": "{{fileId}}"
-                }
+                { "key": "file_id", "value": "{{fileId}}" }
               ]
             },
-            "description": "Resumen de calidad por archivo: ACTIVE, FROZEN, MANUAL_REVIEW, CANCELLED."
+            "description": "Resumen de calidad por archivo: conteos por policy_status (ACTIVE, FROZEN, MANUAL_REVIEW, CANCELLED) y totales."
           }
         },
         {
-          "name": "GET Download Processed File",
+          "name": "GET Validation Report (JSON)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/files/validation-report?file_id={{fileId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "files", "validation-report"],
+              "query": [
+                { "key": "file_id", "value": "{{fileId}}" }
+              ]
+            },
+            "description": "Reporte completo por fila (novedades, bloqueos, tags como `REVISAR PRIMA (PLAN)`)."
+          }
+        },
+        {
+          "name": "GET Validation Report (CSV)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/files/validation-csv?file_id={{fileId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "files", "validation-csv"],
+              "query": [
+                { "key": "file_id", "value": "{{fileId}}" }
+              ]
+            },
+            "description": "Descarga el reporte de novedades en CSV (`text/csv`). Usar 'Send and Download' en Postman para guardar el archivo."
+          }
+        },
+        {
+          "name": "GET Validation Report (XLSX)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/files/validation-xlsx?file_id={{fileId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "files", "validation-xlsx"],
+              "query": [
+                { "key": "file_id", "value": "{{fileId}}" }
+              ]
+            },
+            "description": "Descarga el XLSX espejo del reporte (mismo adjunto que el correo). Sirve el archivo archivado en disco cuando existe; si no, lo regenera desde BD. Usar 'Send and Download' para guardarlo."
+          }
+        },
+        {
+          "name": "GET Download Processed File (original)",
           "request": {
             "method": "GET",
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/api/v1/files/download?file_id={{fileId}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "files",
-                "download"
-              ],
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "files", "download"],
               "query": [
-                {
-                  "key": "file_id",
-                  "value": "{{fileId}}"
-                }
+                { "key": "file_id", "value": "{{fileId}}" }
               ]
             },
-            "description": "Descarga desde el archivo archivado local asociado al file_id."
+            "description": "Descarga el archivo original archivado localmente (`archive_path` en `FILES_ARCHIVE_DIR`)."
           }
         }
       ]
     },
     {
       "name": "Policies",
+      "description": "Listado por producto/estado y búsqueda paginada por credit_number / document_number (AND estricto).",
       "item": [
         {
           "name": "GET Policies by Product",
@@ -729,28 +753,16 @@
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/api/v1/policies?product_id={{productId}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "policies"
-              ],
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "policies"],
               "query": [
-                {
-                  "key": "product_id",
-                  "value": "{{productId}}"
-                },
-                {
-                  "key": "limit",
-                  "value": "{{limit}}",
-                  "description": "Opcional. Sin límite el API devuelve todas las filas del producto.",
-                  "disabled": true
-                }
+                { "key": "product_id", "value": "{{productId}}" },
+                { "key": "status", "value": "{{policyStatus}}", "description": "Opcional. Activar para filtrar por estado.", "disabled": true },
+                { "key": "limit", "value": "{{limit}}", "description": "Opcional. Sin `limit` devuelve todas las filas del producto.", "disabled": true },
+                { "key": "include_raw", "value": "true", "description": "Opcional. Incluye `raw_data` en la respuesta.", "disabled": true }
               ]
             },
-            "description": "Lista pólizas cargadas por producto. Query opcional: `limit`."
+            "description": "Lista pólizas cargadas por producto. Query opcionales: `status`, `limit`, `include_raw`."
           }
         },
         {
@@ -760,30 +772,15 @@
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/api/v1/policies?product_id={{productId}}&status={{policyStatus}}&limit={{limit}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "policies"
-              ],
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "policies"],
               "query": [
-                {
-                  "key": "product_id",
-                  "value": "{{productId}}"
-                },
-                {
-                  "key": "status",
-                  "value": "{{policyStatus}}"
-                },
-                {
-                  "key": "limit",
-                  "value": "{{limit}}"
-                }
+                { "key": "product_id", "value": "{{productId}}" },
+                { "key": "status", "value": "{{policyStatus}}" },
+                { "key": "limit", "value": "{{limit}}" }
               ]
             },
-            "description": "Filtra por estado de póliza (`status`) y opcionalmente limita resultados (`limit`)."
+            "description": "Filtra por `status` (ACTIVE / FROZEN / MANUAL_REVIEW / CANCELLED) y opcionalmente limita resultados."
           }
         },
         {
@@ -793,39 +790,17 @@
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/api/v1/policies/search?credit_number={{creditNumber}}&page={{page}}&page_size={{pageSize}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "policies",
-                "search"
-              ],
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "policies", "search"],
               "query": [
-                {
-                  "key": "credit_number",
-                  "value": "{{creditNumber}}"
-                },
-                {
-                  "key": "page",
-                  "value": "{{page}}",
-                  "description": "Página 1-based. Incrementar mientras has_next_page sea true."
-                },
-                {
-                  "key": "page_size",
-                  "value": "{{pageSize}}",
-                  "description": "Tamaño de página (máx. 200 en el API)."
-                },
-                {
-                  "key": "product_id",
-                  "value": "{{productId}}",
-                  "description": "Opcional. Activar la fila para acotar por producto.",
-                  "disabled": true
-                }
+                { "key": "credit_number", "value": "{{creditNumber}}" },
+                { "key": "page", "value": "{{page}}", "description": "1-based." },
+                { "key": "page_size", "value": "{{pageSize}}", "description": "Máx. 200." },
+                { "key": "product_id", "value": "{{productId}}", "description": "Opcional. Acotar por producto.", "disabled": true },
+                { "key": "include_raw", "value": "true", "description": "Opcional.", "disabled": true }
               ]
             },
-            "description": "Busca por `credit_number`. Paginación con `page` y `page_size`; la respuesta trae `total` y `total_pages` para recorrer todas las páginas."
+            "description": "Búsqueda paginada por `credit_number`. Respuesta incluye `total`, `total_pages`, `has_next_page`, `has_previous_page`."
           }
         },
         {
@@ -835,37 +810,17 @@
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/api/v1/policies/search?document_number={{documentNumber}}&page={{page}}&page_size={{pageSize}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "policies",
-                "search"
-              ],
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "policies", "search"],
               "query": [
-                {
-                  "key": "document_number",
-                  "value": "{{documentNumber}}"
-                },
-                {
-                  "key": "page",
-                  "value": "{{page}}"
-                },
-                {
-                  "key": "page_size",
-                  "value": "{{pageSize}}"
-                },
-                {
-                  "key": "product_id",
-                  "value": "{{productId}}",
-                  "description": "Opcional. Activar la fila para acotar por producto.",
-                  "disabled": true
-                }
+                { "key": "document_number", "value": "{{documentNumber}}" },
+                { "key": "page", "value": "{{page}}" },
+                { "key": "page_size", "value": "{{pageSize}}" },
+                { "key": "product_id", "value": "{{productId}}", "description": "Opcional. Acotar por producto.", "disabled": true },
+                { "key": "include_raw", "value": "true", "description": "Opcional.", "disabled": true }
               ]
             },
-            "description": "Busca por `document_number`. Paginado igual que por crédito; combinable con `credit_number` (AND)."
+            "description": "Búsqueda paginada por `document_number`. Combinable con `credit_number` (AND)."
           }
         },
         {
@@ -875,41 +830,35 @@
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/api/v1/policies/search?credit_number={{creditNumber}}&document_number={{documentNumber}}&page={{page}}&page_size={{pageSize}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "policies",
-                "search"
-              ],
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "policies", "search"],
               "query": [
-                {
-                  "key": "credit_number",
-                  "value": "{{creditNumber}}"
-                },
-                {
-                  "key": "document_number",
-                  "value": "{{documentNumber}}"
-                },
-                {
-                  "key": "page",
-                  "value": "{{page}}"
-                },
-                {
-                  "key": "page_size",
-                  "value": "{{pageSize}}"
-                },
-                {
-                  "key": "product_id",
-                  "value": "{{productId}}",
-                  "description": "Opcional.",
-                  "disabled": true
-                }
+                { "key": "credit_number", "value": "{{creditNumber}}" },
+                { "key": "document_number", "value": "{{documentNumber}}" },
+                { "key": "page", "value": "{{page}}" },
+                { "key": "page_size", "value": "{{pageSize}}" },
+                { "key": "product_id", "value": "{{productId}}", "description": "Opcional.", "disabled": true }
               ]
             },
-            "description": "AND estricto entre crédito y documento. Usa `total_pages` o `has_next_page` para pedir `page`=2, 3, … hasta cubrir todos los resultados."
+            "description": "AND estricto entre `credit_number` y `document_number`. Recorrer con `page`=1..`total_pages`."
+          }
+        },
+        {
+          "name": "GET Policies Search by Product (solo product_id)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/policies/search?product_id={{productId}}&page={{page}}&page_size={{pageSize}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "policies", "search"],
+              "query": [
+                { "key": "product_id", "value": "{{productId}}" },
+                { "key": "page", "value": "{{page}}" },
+                { "key": "page_size", "value": "{{pageSize}}" }
+              ]
+            },
+            "description": "Recorrido paginado por producto (sin filtrar por documento/crédito). Requiere `product_id`."
           }
         }
       ]
@@ -919,15 +868,23 @@
   "variable": [
     {
       "key": "baseUrl",
-      "value": "http://localhost:8080"
+      "value": "http://localhost:8080",
+      "description": "Dev: http://localhost:8080 (start-api-with-docs.sh). Prod: http://<host> (API escucha en :80 por systemd)."
     },
     {
       "key": "productId",
-      "value": "mapfre_vida"
+      "value": "mapfre_vida",
+      "description": "Ejemplos válidos: mapfre_vida, mapfre_acc_men, mapfre_acc_cancer, mapfre_stock, mapfre_anulacion_masiva, bolivar_deudores_banco, bolivar_deudores_esal, bolivar_stock."
+    },
+    {
+      "key": "productFormatId",
+      "value": "",
+      "description": "ID de un product_format existente (consultar GET /product-formats)."
     },
     {
       "key": "policyStatus",
-      "value": "FROZEN"
+      "value": "FROZEN",
+      "description": "ACTIVE | FROZEN | MANUAL_REVIEW | CANCELLED"
     },
     {
       "key": "limit",
@@ -935,7 +892,8 @@
     },
     {
       "key": "fileId",
-      "value": "file_0000000000000000000"
+      "value": "",
+      "description": "Se auto-captura al ejecutar 'GET List Files' o el Paso 08 del flujo E2E."
     },
     {
       "key": "creditNumber",
@@ -956,6 +914,11 @@
     {
       "key": "premiumValue",
       "value": "12000"
+    },
+    {
+      "key": "localDir",
+      "value": "./data/files-archive",
+      "description": "Directorio local para POST /process/scan-local. Vacío = usa FILES_ARCHIVE_DIR."
     }
   ]
 }
