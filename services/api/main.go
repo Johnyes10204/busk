@@ -729,7 +729,7 @@ func main() {
 		writeJSON(w, http.StatusCreated, map[string]string{"status": "seeded"})
 	})
 
-	addr := ":8080"
+	addr := ":80"
 	log.Printf("API escuchando en %s", addr)
 	log.Fatal(http.ListenAndServe(addr, logging(mux)))
 }
@@ -1048,55 +1048,56 @@ func optionalPersonMappings() []model.FieldMap {
 // Prefijos de archivo (match: UPPER(nombre) LIKE %prefijo%).
 // Lote SFTP abril 2026 (tools/sftpconnect/downloads): prefijo numérico = contrato/producto MAPFRE.
 // Cabezotes MAPFRE (Requerimiento conexiones API VF Nov 2025):
-//   108 · Anexo 1 · Vida voluntaria
-//   114 · Anexo 2 · AP Cáncer
-//   110 · Anexo 3 · AP Menores
+//
+//	108 · Anexo 1 · Vida voluntaria
+//	114 · Anexo 2 · AP Cáncer
+//	110 · Anexo 3 · AP Menores
 const (
 	contractMapfreVida   = "5024424900103" // cabezote 108 · Anexo 1 · VIDA_VOL RM-INCLUSION
 	contractMapfreAccMen = "5024524900101" // cabezote 110 · Anexo 3 · ACC MEN RM-INCLUSION
 	contractMapfreCancer = "5024524900103" // cabezote 114 · Anexo 2 · CANCER RM-INCLUSION
 
-	prefixMapfreInclusionVida      = "INCLUSION-VIDA"      // legado INCLUSION-VIDA-MAPFRE.xlsx
-	prefixMapfreInclusionVidaVF    = "VOL RM-INCLUSION"    // VF con FECHAACTIVACION
-	prefixMapfreInclusionVidaAbril = "VIDA_VOL RM-INCLUSION"
-	prefixMapfreInclusionAccMen    = "INCLUSION-ACCIDEMENOR"
-	prefixMapfreInclusionAccMenVF  = "ACC MEN RM-INCLUSION"
-	prefixMapfreInclusionCancer    = "INCLUSION-CANCER"
-	prefixMapfreInclusionCancerVF  = "CANCER RM-INCLUSION"
-	prefixMapfreStock              = "STOCK_MAPFRE"
+	prefixMapfreInclusionVida        = "INCLUSION-VIDA"   // legado INCLUSION-VIDA-MAPFRE.xlsx
+	prefixMapfreInclusionVidaVF      = "VOL RM-INCLUSION" // VF con FECHAACTIVACION
+	prefixMapfreInclusionVidaAbril   = "VIDA_VOL RM-INCLUSION"
+	prefixMapfreInclusionAccMen      = "INCLUSION-ACCIDEMENOR"
+	prefixMapfreInclusionAccMenVF    = "ACC MEN RM-INCLUSION"
+	prefixMapfreInclusionCancer      = "INCLUSION-CANCER"
+	prefixMapfreInclusionCancerVF    = "CANCER RM-INCLUSION"
+	prefixMapfreStock                = "STOCK_MAPFRE"
 	prefixMapfreAnulacionMasiva      = "Anulacion masiva" // cancelaciones MAPFRE (plantilla; no confundir con Anexo 4 Bolívar)
 	prefixMapfreAnulacionMasivaTilde = "Anulación masiva" // variante con tilde (algunos archivos MAPFRE la usan)
 
-	prefixBolivarBancoMicro = "MICRO_BANCO"  // Anexo 4 · Deudores_Banco_Bolivar_MICRO_BANCO_*
-	prefixBolivarBancoPyme  = "Pyme_BANCO"   // Anexo 4 · Deudores_Banco_Bolivar__Pyme_BANCO_*
-	prefixBolivarEsalMicro  = "micro_ESAL"   // Anexo 5 · Deudores_ESAL_Bolivar_micro_ESAL_*
-	prefixBolivarEsalPyme   = "Pyme_ESAL"    // Anexo 5 · Deudores_ESAL_Bolivar_Pyme_ESAL_*
-	prefixBolivarStock      = "STOCK-"       // legado; no matchea STOCK_MAPFRE
+	prefixBolivarBancoMicro   = "MICRO_BANCO" // Anexo 4 · Deudores_Banco_Bolivar_MICRO_BANCO_*
+	prefixBolivarBancoPyme    = "Pyme_BANCO"  // Anexo 4 · Deudores_Banco_Bolivar__Pyme_BANCO_*
+	prefixBolivarEsalMicro    = "micro_ESAL"  // Anexo 5 · Deudores_ESAL_Bolivar_micro_ESAL_*
+	prefixBolivarEsalPyme     = "Pyme_ESAL"   // Anexo 5 · Deudores_ESAL_Bolivar_Pyme_ESAL_*
+	prefixBolivarStock        = "STOCK-"      // legado; no matchea STOCK_MAPFRE
 	prefixBolivarStockFebrero = "STOCK-FEBRE-BOLIVAR"
 )
 
 // IDs y códigos de producto (BD + informes). Alineados con docs/Requerimiento conexiones API_VF_Nov_25.docx.
 const (
-	pidMapfreInclusionVidaVoluntario  = "mapfre_inclusion_vida_voluntario"  // cabezote 108 · Anexo 1
+	pidMapfreInclusionVidaVoluntario  = "mapfre_inclusion_vida_voluntario" // cabezote 108 · Anexo 1
 	codeMapfreInclusionVidaVoluntario = "MAPFRE_INCLUSION_VIDA_VOLUNTARIO" // cabezote 108 · Anexo 1
 
-	pidMapfreInclusionAPMenores  = "mapfre_inclusion_ap_menores"  // cabezote 110 · Anexo 3
+	pidMapfreInclusionAPMenores  = "mapfre_inclusion_ap_menores" // cabezote 110 · Anexo 3
 	codeMapfreInclusionAPMenores = "MAPFRE_INCLUSION_AP_MENORES" // cabezote 110 · Anexo 3
 
-	pidMapfreInclusionAPCancer  = "mapfre_inclusion_ap_cancer"  // cabezote 114 · Anexo 2
+	pidMapfreInclusionAPCancer  = "mapfre_inclusion_ap_cancer" // cabezote 114 · Anexo 2
 	codeMapfreInclusionAPCancer = "MAPFRE_INCLUSION_AP_CANCER" // cabezote 114 · Anexo 2
 
-	pidMapfreStockCartera  = "mapfre_stock_cartera"  // stock MAPFRE (diagrama operativo; fuera de Etapa 1 voluntario)
+	pidMapfreStockCartera  = "mapfre_stock_cartera" // stock MAPFRE (diagrama operativo; fuera de Etapa 1 voluntario)
 	codeMapfreStockCartera = "MAPFRE_STOCK_CARTERA"
 
-	pidMapfreAnulacionMasiva  = "mapfre_anulacion_masiva"  // cancelaciones MAPFRE (plantilla Anulacion masiva)
+	pidMapfreAnulacionMasiva  = "mapfre_anulacion_masiva" // cancelaciones MAPFRE (plantilla Anulacion masiva)
 	codeMapfreAnulacionMasiva = "MAPFRE_ANULACION_MASIVA"
 
-	pidBolivarInclusionDeudoresBanco  = "bolivar_inclusion_deudores_banco"  // Anexo 4 · Deudores_Banco_Bolivar
+	pidBolivarInclusionDeudoresBanco  = "bolivar_inclusion_deudores_banco" // Anexo 4 · Deudores_Banco_Bolivar
 	codeBolivarInclusionDeudoresBanco = "BOLIVAR_INCLUSION_DEUDORES_BANCO" // Anexo 4
 
 	// Stock Bolívar mensual + inclusiones ESAL (Anexo 5): mismo producto, distintos formatos.
-	pidBolivarDeudoresStockEsal  = "bolivar_deudores_stock_esal"  // Anexo 5 + stock mensual
+	pidBolivarDeudoresStockEsal  = "bolivar_deudores_stock_esal" // Anexo 5 + stock mensual
 	codeBolivarDeudoresStockEsal = "BOLIVAR_DEUDORES_STOCK_ESAL" // Anexo 5 + stock mensual
 )
 
