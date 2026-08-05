@@ -1,6 +1,6 @@
 version: "3.9"
 
-# Docker Compose para servidor con MySQL ya instalado + Caddy reverse proxy HTTPS
+# Docker Compose para servidor con MySQL ya instalado + Caddy reverse proxy
 # Uso: docker-compose -f docker-compose.servidor.yml up -d
 
 services:
@@ -10,10 +10,12 @@ services:
       dockerfile: Dockerfile
     container_name: busk-api
     restart: unless-stopped
+    networks:
+      - busk-net
 
     environment:
-      # ⭐ Conecta a MySQL del servidor (NO en Docker)
-      MYSQL_DSN: "root:TU_CONTRASEÑA_AQUI@tcp(localhost:3306)/busk?parseTime=true&multiStatements=true"
+      # ⭐ Conecta a MySQL del servidor usando host.docker.internal
+      MYSQL_DSN: "root:TU_CONTRASEÑA_AQUI@tcp(host.docker.internal:3306)/busk?parseTime=true&multiStatements=true"
 
       PROCESSOR_WORKERS: ${PROCESSOR_WORKERS:-2}
       PROCESSOR_READ_FULL_FILE_ON_ROW_ERRORS: ${PROCESSOR_READ_FULL_FILE_ON_ROW_ERRORS:-false}
@@ -41,11 +43,8 @@ services:
       - ./services/api/data:/data
       - ./services/api/.env:/app/.env:ro
 
-    # ⭐ Acceder a localhost del servidor (para MySQL local)
-    network_mode: "host"
-
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/v1/health"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/api/v1/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -60,6 +59,8 @@ services:
     image: caddy:2-alpine
     container_name: busk-caddy
     restart: unless-stopped
+    networks:
+      - busk-net
 
     ports:
       - "80:80"
@@ -78,9 +79,10 @@ services:
         max-size: "10m"
         max-file: "3"
 
-    # Caddy se conecta a API via localhost (network_mode host en API)
-    network_mode: "host"
-
 volumes:
   caddy-data:
   caddy-config:
+
+networks:
+  busk-net:
+    driver: bridge
