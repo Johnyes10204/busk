@@ -30,7 +30,7 @@ nano .env
 ```env
 # MySQL ya está instalado en el servidor
 # Solo define credenciales (usuario debe existir en MySQL)
-MYSQL_DSN=busk:busk123@tcp(localhost:3306)/busk?parseTime=true&multiStatements=true
+MYSQL_DSN=oot:TU_CONTRASEÑA_AQUItcp(localhost:3306)/busk?parseTime=true&multiStatements=true
 
 # Workers para procesar archivos en paralelo
 PROCESSOR_WORKERS=2
