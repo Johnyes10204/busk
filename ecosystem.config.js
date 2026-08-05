@@ -1,0 +1,31 @@
+module.exports = {
+  apps: [
+    {
+      name: 'busk-api',
+      script: './services/api/busk-api',
+      instances: 1,
+      exec_mode: 'fork',
+      restart_delay: 3000,
+      max_memory_restart: '500M',
+      env: {
+        MYSQL_DSN: 'root:TU_CONTRASEÑA_AQUI@tcp(localhost:3306)/busk?parseTime=true&multiStatements=true',
+        PROCESSOR_WORKERS: '2',
+        PROCESSOR_READ_FULL_FILE_ON_ROW_ERRORS: 'false',
+        FILES_ARCHIVE_DIR: './services/api/data/files-archive',
+        REPORTS_ARCHIVE_DIR: './services/api/data/reports-archive',
+        SFTP_HOST: '',
+        SFTP_PORT: '22',
+        SFTP_USER: '',
+        SFTP_PASSWORD: '',
+        SFTP_REMOTE_DIR: '/incoming',
+        SENDGRID_API_KEY: '',
+        SENDGRID_FROM_EMAIL: '',
+        SENDGRID_ERROR_TO_EMAILS: '',
+      },
+      error_file: './logs/error.log',
+      out_file: './logs/out.log',
+      log_file: './logs/combined.log',
+      time_format: 'YYYY-MM-DD HH:mm:ss Z',
+    },
+  ],
+};
