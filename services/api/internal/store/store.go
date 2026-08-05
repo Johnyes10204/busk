@@ -76,7 +76,7 @@ type FileValidationReport struct {
 func NewMySQLFromEnv() (*Store, error) {
 	dsn := os.Getenv("MYSQL_DSN")
 	if dsn == "" {
-		dsn = "root:TU_CONTRASEÑA_AQUI@tcp(127.0.0.1:3306)/busk?parseTime=true&multiStatements=true"
+		dsn = "rroot:TU_CONTRASEÑA_AQUI@tcp(127.0.0.1:3306)/busk?parseTime=true&multiStatements=true"
 
 	}
 	db, err := sql.Open("mysql", dsn)

@@ -34,7 +34,7 @@ services:
       mysql:
         condition: service_healthy
     environment:
-      MYSQL_DSN: "oot:TU_CONTRASEÑA_AQUItcp(mysql:3306)/busk?parseTime=true&multiStatements=true"
+      MYSQL_DSN: "root:TU_CONTRASEÑA_AQUItcp(mysql:3306)/busk?parseTime=true&multiStatements=true"
       PROCESSOR_WORKERS: ${PROCESSOR_WORKERS:-2}
       PROCESSOR_READ_FULL_FILE_ON_ROW_ERRORS: ${PROCESSOR_READ_FULL_FILE_ON_ROW_ERRORS:-false}
       FILES_ARCHIVE_DIR: ${FILES_ARCHIVE_DIR:-/data/files-archive}
