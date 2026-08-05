@@ -1,13 +1,7 @@
 # Caddy reverse proxy para Busk Seguros API
-# Escucha en puerto 80, redirige HTTP → HTTPS automáticamente
-# HTTPS disponible en puerto 443
+# Escucha en puerto 80 (HTTP simple, sin SSL)
 
-# Cambiar esto a tu dominio o IP
-# Ejemplos:
-#   - api.busk.com          (Let's Encrypt automático)
-#   - 62.146.228.79         (certificado auto-signed)
-
-62.146.228.79 {
+http://62.146.228.79 {
 	# Reverse proxy a la API (en red Docker interna)
 	reverse_proxy http://api:8080 {
 		# Headers para preservar información original
