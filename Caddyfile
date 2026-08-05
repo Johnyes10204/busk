@@ -1,16 +1,12 @@
-# Caddy reverse proxy para Busk Seguros API
-# Escucha en puerto 80 (HTTP simple, sin SSL)
+# Caddy reverse proxy para Busk Seguros API (con PM2)
+# Escucha en puerto 80, redirija a PM2 en puerto 8080
 
-http://62.146.228.79 {
-	# Reverse proxy a la API (en red Docker interna)
-	reverse_proxy http://api:8080 {
-		# Headers para preservar información original
+:80 {
+	reverse_proxy localhost:8080 {
 		header_up X-Forwarded-For {http.request.remote.host}
 		header_up X-Forwarded-Proto {http.request.proto}
 		header_up X-Forwarded-Host {http.request.host}
 	}
-
-	# Logs
 	log {
 		output stdout
 		format json
