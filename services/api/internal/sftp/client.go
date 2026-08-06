@@ -15,11 +15,12 @@ import (
 )
 
 type Config struct {
-	Host      string
-	Port      string
-	User      string
-	Password  string
-	RemoteDir string
+	Host           string
+	Port           string
+	User           string
+	Password       string
+	RemoteDir      string
+	PrivateKeyPath string
 }
 
 type Client struct {
@@ -31,33 +32,29 @@ type Client struct {
 
 func NewFromEnv() (Config, error) {
 	cfg := Config{
-		Host:      getenv("SFTP_HOST", "192.168.46.101"),
-		Port:      getenv("SFTP_PORT", "2222"),
-		User:      getenv("SFTP_USER", "usuario_ftp"),
-		Password:  getenv("SFTP_PASSWORD", "BuskS3g26*"),
-		RemoteDir: getenv("SFTP_REMOTE_DIR", "."),
+		Host:           getenv("SFTP_HOST", "192.168.46.101"),
+		Port:           getenv("SFTP_PORT", "2222"),
+		User:           getenv("SFTP_USER", "usuario_ftp"),
+		Password:       getenv("SFTP_PASSWORD", "BuskS3g26*"),
+		RemoteDir:      getenv("SFTP_REMOTE_DIR", "."),
+		PrivateKeyPath: getenv("SFTP_PRIVATE_KEY_PATH", ""),
 	}
 	cfg.Host = strings.TrimPrefix(strings.TrimPrefix(cfg.Host, "sftp://"), "http://")
-	if cfg.Password == "" {
-		return Config{}, fmt.Errorf("missing SFTP_PASSWORD")
+	if cfg.Password == "" && cfg.PrivateKeyPath == "" {
+		return Config{}, fmt.Errorf("missing SFTP_PASSWORD or SFTP_PRIVATE_KEY_PATH")
 	}
 	return cfg, nil
 }
 
 func Connect(cfg Config) (*Client, error) {
-	log.Printf("[sftp] iniciando conexión host=%s port=%s user=%s remote_dir=%s", cfg.Host, cfg.Port, cfg.User, cfg.RemoteDir)
+	log.Printf("[sftp] iniciando conexión host=%s port=%s user=%s remote_dir=%s pubkey=%v", cfg.Host, cfg.Port, cfg.User, cfg.RemoteDir, cfg.PrivateKeyPath != "")
+	authMethods, err := buildAuthMethods(cfg)
+	if err != nil {
+		return nil, err
+	}
 	sshCfg := &ssh.ClientConfig{
-		User: cfg.User,
-		Auth: []ssh.AuthMethod{
-			ssh.Password(cfg.Password),
-			ssh.KeyboardInteractive(func(_ string, _ string, questions []string, _ []bool) ([]string, error) {
-				answers := make([]string, len(questions))
-				for i := range questions {
-					answers[i] = cfg.Password
-				}
-				return answers, nil
-			}),
-		},
+		User:            cfg.User,
+		Auth:            authMethods,
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         30 * time.Second,
 	}
@@ -100,6 +97,32 @@ func Connect(cfg Config) (*Client, error) {
 	go sshKeepalive(conn, addr, stop)
 
 	return &Client{raw: raw, conn: conn, baseDir: cfg.RemoteDir, keepaliveStop: stop}, nil
+}
+
+// buildAuthMethods arma la lista de métodos SSH según cfg. Si hay una llave privada,
+// va primero; el password queda siempre como fallback si está definido. No se usa
+// keyboard-interactive porque cuando el server la rechaza sin mandar challenge, x/crypto/ssh
+// aborta el handshake con "unexpected message type 51" en vez de reportar auth failure limpio.
+func buildAuthMethods(cfg Config) ([]ssh.AuthMethod, error) {
+	var methods []ssh.AuthMethod
+	if cfg.PrivateKeyPath != "" {
+		keyBytes, err := os.ReadFile(cfg.PrivateKeyPath)
+		if err != nil {
+			return nil, fmt.Errorf("leer llave privada %s: %w", cfg.PrivateKeyPath, err)
+		}
+		signer, err := ssh.ParsePrivateKey(keyBytes)
+		if err != nil {
+			return nil, fmt.Errorf("parsear llave privada %s: %w", cfg.PrivateKeyPath, err)
+		}
+		methods = append(methods, ssh.PublicKeys(signer))
+	}
+	if cfg.Password != "" {
+		methods = append(methods, ssh.Password(cfg.Password))
+	}
+	if len(methods) == 0 {
+		return nil, fmt.Errorf("sin métodos de auth SFTP configurados")
+	}
+	return methods, nil
 }
 
 // sshKeepalive envía requests keepalive@openssh.com cada 30 s. Si dos consecutivos fallan,
