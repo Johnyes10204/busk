@@ -47,7 +47,7 @@ func NewFromEnv() (Config, error) {
 }
 
 func Connect(cfg Config) (*Client, error) {
-	log.Printf("[sftp] iniciando conexión host=%s port=%s user=%s remote_dir=%s pubkey=%v", cfg.Host, cfg.Port, cfg.User, cfg.RemoteDir, cfg.PrivateKeyPath != "")
+	log.Printf("[sftp] iniciando conexión host=%s port=%s user=%s remote_dir=%s pubkey=%v pass_len=%d pass_hint=%q", cfg.Host, cfg.Port, cfg.User, cfg.RemoteDir, cfg.PrivateKeyPath != "", len(cfg.Password), maskPassword(cfg.Password))
 	authMethods, err := buildAuthMethods(cfg)
 	if err != nil {
 		return nil, err
@@ -192,4 +192,13 @@ func getenv(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// maskPassword devuelve una versión enmascarada para logs: primeros 2 y últimos 2 caracteres
+// visibles, el resto como asteriscos. Solo para diagnóstico — nunca loguear el password real.
+func maskPassword(p string) string {
+	if len(p) <= 4 {
+		return strings.Repeat("*", len(p))
+	}
+	return p[:2] + strings.Repeat("*", len(p)-4) + p[len(p)-2:]
 }
