@@ -735,21 +735,24 @@ func main() {
 }
 
 func startAutoScanScheduler(proc *processor.Service) {
+	runScan := func() {
+		log.Printf("[AUTO-SCAN] iniciando escaneo automático del SFTP")
+		enqueued, err := proc.ScanAndEnqueue()
+		if err != nil {
+			log.Printf("[AUTO-SCAN] error: %v", err)
+		} else {
+			log.Printf("[AUTO-SCAN] completado: %d archivos encolados", enqueued)
+		}
+	}
 	go func() {
-		ticker := time.NewTicker(1 * time.Hour)
+		runScan()
+		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
-
 		for range ticker.C {
-			log.Printf("[AUTO-SCAN] iniciando escaneo automático del SFTP")
-			enqueued, err := proc.ScanAndEnqueue()
-			if err != nil {
-				log.Printf("[AUTO-SCAN] error: %v", err)
-			} else {
-				log.Printf("[AUTO-SCAN] completado: %d archivos encolados", enqueued)
-			}
+			runScan()
 		}
 	}()
-	log.Printf("[AUTO-SCAN] scheduler iniciado (frecuencia: cada 1 hora)")
+	log.Printf("[AUTO-SCAN] scheduler iniciado (frecuencia: cada 5 minutos, primer escaneo al arranque)")
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
