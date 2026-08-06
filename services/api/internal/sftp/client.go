@@ -50,6 +50,13 @@ func Connect(cfg Config) (*Client, error) {
 		User: cfg.User,
 		Auth: []ssh.AuthMethod{
 			ssh.Password(cfg.Password),
+			ssh.KeyboardInteractive(func(_ string, _ string, questions []string, _ []bool) ([]string, error) {
+				answers := make([]string, len(questions))
+				for i := range questions {
+					answers[i] = cfg.Password
+				}
+				return answers, nil
+			}),
 		},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         30 * time.Second,
