@@ -353,10 +353,12 @@ func (s *Store) SetFileEmailError(fileID, emailError string) error {
 	return err
 }
 
-// FileHashAlreadyProcessed indica si ya se trató un archivo con el mismo contenido (SHA-256
-// de todos los bytes del fichero) en estado PROCESSED o SKIPPED.
+// FileHashAlreadyHandled indica si ya se trató un archivo con el mismo contenido (SHA-256 de
+// todos los bytes del fichero) en cualquier estado terminal: PROCESSED, SKIPPED o ERROR. Si un
+// archivo ya falló, subirlo de nuevo con el mismo contenido volverá a fallar por lo mismo, así
+// que lo saltamos para evitar re-descargar, re-procesar y re-notificar cada scan.
 // Nota: la deduplicación es global por contenido (no por producto).
-func (s *Store) FileHashAlreadyProcessed(productID, fileHash string) bool {
+func (s *Store) FileHashAlreadyHandled(fileHash string) bool {
 	if strings.TrimSpace(fileHash) == "" {
 		return false
 	}
@@ -366,11 +368,24 @@ func (s *Store) FileHashAlreadyProcessed(productID, fileHash string) bool {
 		Where(sq.Eq{"status": []string{
 			string(model.FileStatusProcessed),
 			string(model.FileStatusSkipped),
+			string(model.FileStatusError),
 		}})
 	sqlStr, args, _ := qb.Limit(1).ToSql()
 	var one int
 	err := s.db.QueryRow(sqlStr, args...).Scan(&one)
 	return err == nil && one == 1
+}
+
+// DeleteFileRecord elimina la fila de processed_files por id. Se usa cuando encolamos un
+// archivo como QUEUED y luego descubrimos que su hash ya fue manejado en una corrida previa:
+// borramos la fila para no dejar QUEUED huérfano ni contaminar el historial con duplicados.
+func (s *Store) DeleteFileRecord(id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("file_id es obligatorio")
+	}
+	_, err := s.db.Exec(`DELETE FROM processed_files WHERE id = ?`, id)
+	return err
 }
 
 func (s *Store) InsertPolicies(policies []model.PolicyRecord) error {

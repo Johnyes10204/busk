@@ -180,11 +180,38 @@ func (c *Client) MoveToFolder(name, folder string) (string, error) {
 	if err := c.raw.MkdirAll(dstDir); err != nil {
 		return "", fmt.Errorf("mkdir %s: %w", dstDir, err)
 	}
-	dst := path.Join(dstDir, name)
+	// SSH_FXP_RENAME de SFTPv3 falla si el destino existe, aunque el usuario tenga permisos.
+	// Si ya hay un archivo con el mismo nombre en la carpeta destino, insertamos un sufijo
+	// timestamp antes de la extensión para preservar ambos y garantizar que el move nunca falle
+	// por colisión.
+	dst := path.Join(dstDir, resolveDestName(c.raw, dstDir, name))
 	if err := c.raw.Rename(src, dst); err != nil {
 		return "", fmt.Errorf("rename %s -> %s: %w", src, dst, err)
 	}
 	return dst, nil
+}
+
+// resolveDestName elige un nombre libre dentro de dstDir. Si name no colisiona lo devuelve tal
+// cual; si colisiona, agrega -YYYYMMDDHHMMSS antes de la extensión y, si aún colisiona (mismo
+// segundo, poco probable), agrega -N incremental.
+func resolveDestName(c *sftp.Client, dstDir, name string) string {
+	if _, err := c.Stat(path.Join(dstDir, name)); err != nil {
+		return name
+	}
+	ext := path.Ext(name)
+	base := strings.TrimSuffix(name, ext)
+	ts := time.Now().UTC().Format("20060102150405")
+	candidate := fmt.Sprintf("%s-%s%s", base, ts, ext)
+	if _, err := c.Stat(path.Join(dstDir, candidate)); err != nil {
+		return candidate
+	}
+	for i := 1; i < 1000; i++ {
+		alt := fmt.Sprintf("%s-%s-%d%s", base, ts, i, ext)
+		if _, err := c.Stat(path.Join(dstDir, alt)); err != nil {
+			return alt
+		}
+	}
+	return fmt.Sprintf("%s-%s-%d%s", base, ts, time.Now().UnixNano(), ext)
 }
 
 func getenv(key, def string) string {

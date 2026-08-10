@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	sftpclient "github.com/buskseguros-design/services/api/internal/sftp"
 )
@@ -72,11 +73,33 @@ func (l localFileSource) MoveToFolder(name, folder string) (string, error) {
 	if err := os.MkdirAll(dstDir, 0o755); err != nil {
 		return "", fmt.Errorf("mkdir %s: %w", dstDir, err)
 	}
-	dst := filepath.Join(dstDir, name)
+	dst := filepath.Join(dstDir, resolveLocalDestName(dstDir, name))
 	if err := os.Rename(src, dst); err != nil {
 		return "", fmt.Errorf("rename %s -> %s: %w", src, dst, err)
 	}
 	return dst, nil
+}
+
+// resolveLocalDestName evita colisiones agregando -YYYYMMDDHHMMSS antes de la extensión si el
+// destino ya existe. Simetría con la implementación SFTP.
+func resolveLocalDestName(dstDir, name string) string {
+	if _, err := os.Stat(filepath.Join(dstDir, name)); err != nil {
+		return name
+	}
+	ext := filepath.Ext(name)
+	base := name[:len(name)-len(ext)]
+	ts := time.Now().UTC().Format("20060102150405")
+	candidate := fmt.Sprintf("%s-%s%s", base, ts, ext)
+	if _, err := os.Stat(filepath.Join(dstDir, candidate)); err != nil {
+		return candidate
+	}
+	for i := 1; i < 1000; i++ {
+		alt := fmt.Sprintf("%s-%s-%d%s", base, ts, i, ext)
+		if _, err := os.Stat(filepath.Join(dstDir, alt)); err != nil {
+			return alt
+		}
+	}
+	return fmt.Sprintf("%s-%s-%d%s", base, ts, time.Now().UnixNano(), ext)
 }
 
 func (l localFileSource) Close() {}

@@ -66,6 +66,11 @@ type FileProcessRecord struct {
 	ArchivePath          string            `json:"archive_path,omitempty"`
 	ReportArchivePath    string            `json:"report_archive_path,omitempty"`
 	ProcessedAt          time.Time         `json:"processed_at"`
+	// SuppressPersist es transitorio (no se serializa ni persiste). Cuando true, el worker no
+	// upsertea el registro terminal ni envía notificación: se usa para archivos cuyo hash ya
+	// fue manejado en una corrida previa (dedup), donde queremos borrar la fila QUEUED y no
+	// dejar rastro nuevo.
+	SuppressPersist bool `json:"-"`
 }
 
 type PolicyRecord struct {

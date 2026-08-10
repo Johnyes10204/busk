@@ -156,6 +156,18 @@ func (s *Service) runJob(workerID int, job queuedJob) {
 		ProcessedAt: time.Now().UTC(),
 	})
 	rec := s.processByName(job)
+	if rec.SuppressPersist {
+		// Duplicado por hash detectado ya manejado antes: borramos la fila QUEUED creada al
+		// encolar (para no dejar rastro nuevo en processed_files) y no enviamos correo. El
+		// archivo ya fue movido a PROCESSED/ dentro de processOne cuando aplicó.
+		if err := s.store.DeleteFileRecord(job.ID); err != nil {
+			log.Printf("[processor] worker_%d no se pudo borrar QUEUED de duplicado file_id=%s err=%v", workerID, job.ID, err)
+		}
+		terminalWritten = true
+		s.updateProgress(job.ID, job.FileName, string(rec.Status), 100, "duplicado (omitido sin registrar)", rec.ProductID, rec.ErrorReason)
+		log.Printf("[processor] worker_%d duplicado suprimido file_id=%s file=%s hash=%s", workerID, job.ID, job.FileName, rec.FileHash)
+		return
+	}
 	s.store.AddFileRecord(rec)
 	// Red de seguridad: si el AddFileRecord falló silenciosamente (JSON demasiado grande,
 	// timeout, deadlock), un UPDATE mínimo garantiza que al menos el status terminal quede
@@ -539,14 +551,16 @@ func (s *Service) processOne(src fileSource, job queuedJob) model.FileProcessRec
 	policies, fileHash, archivePath, selectedProductID, err := validateFile(reader, rec.ID, fileName, products, s)
 	if err != nil {
 		if errors.Is(err, errDuplicateFileHash) {
+			// Dedup por hash: el archivo (mismo SHA-256) ya fue manejado en PROCESSED/SKIPPED/ERROR.
+			// No persistimos terminal, no enviamos correo — solo movemos el archivo para sacarlo de
+			// la raíz del SFTP y evitar que el próximo scan lo vuelva a levantar. El worker borra la
+			// fila QUEUED al ver SuppressPersist.
 			rec.Status = model.FileStatusSkipped
-			rec.ErrorReason = "archivo omitido: mismo contenido (SHA-256) ya procesado u omitido"
+			rec.ErrorReason = "archivo omitido: mismo contenido (SHA-256) ya manejado en corrida previa"
 			rec.FileHash = fileHash
 			rec.ArchivePath = archivePath
 			rec.ProcessedPath = moveRemoteFile(src, fileName, "PROCESSED")
-			if rec.ProcessedPath == "" {
-				rec.ErrorReason += " | SFTP: no se pudo mover el archivo a PROCESSED/"
-			}
+			rec.SuppressPersist = true
 			return rec
 		}
 		rec.Status = model.FileStatusError
@@ -740,7 +754,9 @@ func validateFile(r io.Reader, fileID, fileName string, candidates []model.Produ
 		return nil, fileHash, archivePath, "", fmt.Errorf("close archive file: %w", err)
 	}
 	// Primer control: deduplicación por hash de contenido, antes de parsear workbook.
-	if svc.store.FileHashAlreadyProcessed("", fileHash) {
+	// Cubre PROCESSED, SKIPPED y ERROR — si el archivo ya fue manejado (aun fallando), un
+	// re-upload idéntico volvería a fallar por lo mismo; no re-descargamos, no re-notificamos.
+	if svc.store.FileHashAlreadyHandled(fileHash) {
 		log.Printf("[processor] hash duplicado detectado file_id=%s file=%s sha256=%s", fileID, fileName, fileHash)
 		return nil, fileHash, archivePath, "", errDuplicateFileHash
 	}
