@@ -503,6 +503,74 @@ func deleteRemoteFile(src fileSource, fileName string) bool {
 	return true
 }
 
+// disposeRemoteToError intenta mover el archivo a la subcarpeta ERROR/ del SFTP; si el
+// MOVE falla (permisos, colisión no resoluble, carpeta inexistente), cae a DELETE para
+// no dejar el archivo huérfano en la raíz — si no, cada auto-scan lo levantaría de nuevo
+// y generaría otro correo de ERROR. Devuelve la ruta destino en el SFTP ("" si terminó
+// borrado o si ambas operaciones fallaron). Anexa el motivo al errorReason del rec.
+func disposeRemoteToError(src fileSource, fileName string, rec *model.FileProcessRecord) {
+	dst, moveErr := src.MoveToFolder(fileName, "ERROR")
+	if moveErr == nil {
+		log.Printf("[processor] MOVE OK file=%q -> %s", fileName, dst)
+		rec.ProcessedPath = dst
+		return
+	}
+	log.Printf("[processor] MOVE falló file=%q dest_folder=ERROR err=%v — intentando DELETE fallback",
+		fileName, moveErr)
+	if delErr := src.Delete(fileName); delErr != nil {
+		log.Printf("[processor] DELETE fallback también falló file=%q err=%v", fileName, delErr)
+		appendErrorReason(rec, fmt.Sprintf("SFTP: no se pudo mover a ERROR/ (%s) ni borrar (%s)", moveErr, delErr))
+		rec.ProcessedPath = ""
+		return
+	}
+	log.Printf("[processor] DELETE OK file=%q (fallback tras MOVE ERROR/ fallido)", fileName)
+	appendErrorReason(rec, fmt.Sprintf("SFTP: MOVE a ERROR/ falló (%s), archivo eliminado del origen", moveErr))
+	rec.ProcessedPath = ""
+}
+
+// appendErrorReason concatena un mensaje al ErrorReason preservando lo previo.
+func appendErrorReason(rec *model.FileProcessRecord, msg string) {
+	if strings.TrimSpace(msg) == "" {
+		return
+	}
+	if strings.TrimSpace(rec.ErrorReason) == "" {
+		rec.ErrorReason = msg
+		return
+	}
+	rec.ErrorReason += " | " + msg
+}
+
+// downloadOriginalOnly descarga el archivo del origen a FILES_ARCHIVE_DIR sin parsear
+// ni validar. Se usa cuando queremos preservar el archivo original para adjuntarlo al
+// correo antes de que un error temprano (p. ej. "no existe producto configurado") nos
+// impida llegar a validateFile. Devuelve la ruta local o "" si la descarga falló.
+func downloadOriginalOnly(src fileSource, fileID, fileName string) string {
+	reader, err := src.Open(fileName)
+	if err != nil {
+		log.Printf("[processor] downloadOriginalOnly abrir remoto falló file=%q err=%v", fileName, err)
+		return ""
+	}
+	defer reader.Close()
+	archivePath, err := buildArchivePath(fileID, fileName)
+	if err != nil {
+		log.Printf("[processor] downloadOriginalOnly buildArchivePath falló file=%q err=%v", fileName, err)
+		return ""
+	}
+	archive, err := os.Create(archivePath)
+	if err != nil {
+		log.Printf("[processor] downloadOriginalOnly create archive falló file=%q err=%v", fileName, err)
+		return ""
+	}
+	defer archive.Close()
+	if _, err := io.Copy(archive, reader); err != nil {
+		log.Printf("[processor] downloadOriginalOnly copy falló file=%q err=%v", fileName, err)
+		_ = os.Remove(archivePath)
+		return ""
+	}
+	log.Printf("[processor] downloadOriginalOnly OK file=%q archive=%s", fileName, archivePath)
+	return archivePath
+}
+
 // isTransientNetworkError distingue fallas transitorias (conexión SSH caída, timeout,
 // EOF inesperado, pipe roto) de errores estructurales del archivo. Se usa para silenciar
 // reintentos ante blips de red y notificar solo cuando el corte es sostenido.
@@ -600,10 +668,14 @@ func (s *Service) processOne(src fileSource, job queuedJob) model.FileProcessRec
 	if len(products) == 0 {
 		rec.Status = model.FileStatusError
 		rec.ErrorReason = "no existe producto configurado para el prefijo del archivo"
-		rec.ProcessedPath = moveRemoteFile(src, fileName, "ERROR")
-		if rec.ProcessedPath == "" {
-			rec.ErrorReason += " (no se pudo mover a carpeta ERROR/ en SFTP)"
+		// Descargamos el archivo original para adjuntarlo al correo — sin producto configurado
+		// no llegamos a validateFile, así que sin este paso el operador recibiría el mail sin
+		// ningún adjunto útil. Si la descarga falla igual seguimos: el correo llevará el motivo
+		// en texto y disposeRemoteToError intentará limpiar el SFTP.
+		if archivePath := downloadOriginalOnly(src, rec.ID, fileName); archivePath != "" {
+			rec.ArchivePath = archivePath
 		}
+		disposeRemoteToError(src, fileName, &rec)
 		s.clearTransientRetry(fileName)
 		return rec
 	}
@@ -635,10 +707,10 @@ func (s *Service) processOne(src fileSource, job queuedJob) model.FileProcessRec
 		}
 		rec.Status = model.FileStatusError
 		rec.ErrorReason = "no se pudo abrir archivo remoto: " + err.Error()
-		rec.ProcessedPath = moveRemoteFile(src, fileName, "ERROR")
-		if rec.ProcessedPath == "" {
-			rec.ErrorReason += " (no se pudo mover a carpeta ERROR/ en SFTP)"
-		}
+		// No pudimos abrir el archivo así que no hay original para adjuntar; el correo irá
+		// texto-solo con el motivo. Igual intentamos disposeRemoteToError por si el file
+		// existe pero el problema era solo el Open (permisos por archivo, no por sesión).
+		disposeRemoteToError(src, fileName, &rec)
 		s.clearTransientRetry(fileName)
 		return rec
 	}
@@ -703,10 +775,7 @@ func (s *Service) processOne(src fileSource, job queuedJob) model.FileProcessRec
 		rec.ErrorReason = err.Error()
 		rec.FileHash = fileHash
 		rec.ArchivePath = archivePath
-		rec.ProcessedPath = moveRemoteFile(src, fileName, "ERROR")
-		if rec.ProcessedPath == "" {
-			rec.ErrorReason += " | SFTP: no se pudo mover el archivo a ERROR/"
-		}
+		disposeRemoteToError(src, fileName, &rec)
 		s.clearTransientRetry(fileName)
 		return rec
 	}
@@ -735,20 +804,14 @@ func (s *Service) processOne(src fileSource, job queuedJob) model.FileProcessRec
 		if marshErr != nil {
 			rec.Status = model.FileStatusError
 			rec.ErrorReason = "no se pudo serializar informe de validación: " + marshErr.Error()
-			rec.ProcessedPath = moveRemoteFile(src, fileName, "ERROR")
-			if rec.ProcessedPath == "" {
-				rec.ErrorReason += " | SFTP: no se pudo mover el archivo a ERROR/"
-			}
+			disposeRemoteToError(src, fileName, &rec)
 			return rec
 		}
 		rec.ValidationReportJSON = string(b)
 		rec.ReportArchivePath = saveValidationReportArchive(report, rec.ID, fileName)
 		rec.Status = model.FileStatusError
 		rec.ErrorReason = summary
-		rec.ProcessedPath = moveRemoteFile(src, fileName, "ERROR")
-		if rec.ProcessedPath == "" {
-			rec.ErrorReason += " | SFTP: no se pudo mover el archivo a ERROR/"
-		}
+		disposeRemoteToError(src, fileName, &rec)
 		log.Printf("[processor] solo_informe file_id=%s filas_con_incidencias=%d", rec.ID, nIssue)
 		return rec
 	}
@@ -756,10 +819,7 @@ func (s *Service) processOne(src fileSource, job queuedJob) model.FileProcessRec
 	if err := s.store.InsertPolicies(policies); err != nil {
 		rec.Status = model.FileStatusError
 		rec.ErrorReason = "no se pudieron registrar pólizas: " + err.Error()
-		rec.ProcessedPath = moveRemoteFile(src, fileName, "ERROR")
-		if rec.ProcessedPath == "" {
-			rec.ErrorReason += " | SFTP: no se pudo mover el archivo a ERROR/"
-		}
+		disposeRemoteToError(src, fileName, &rec)
 		return rec
 	}
 
