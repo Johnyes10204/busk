@@ -16,6 +16,7 @@ import (
 type fileSource interface {
 	Open(name string) (io.ReadCloser, error)
 	MoveToFolder(name, folder string) (string, error)
+	Delete(name string) error
 	Close()
 }
 
@@ -30,6 +31,10 @@ func (s sftpFileSource) Open(name string) (io.ReadCloser, error) {
 
 func (s sftpFileSource) MoveToFolder(name, folder string) (string, error) {
 	return s.c.MoveToFolder(name, folder)
+}
+
+func (s sftpFileSource) Delete(name string) error {
+	return s.c.DeleteFile(name)
 }
 
 func (s sftpFileSource) Close() {
@@ -65,6 +70,10 @@ func newLocalFileSource(dir string) (localFileSource, error) {
 
 func (l localFileSource) Open(name string) (io.ReadCloser, error) {
 	return os.Open(filepath.Join(l.baseDir, name))
+}
+
+func (l localFileSource) Delete(name string) error {
+	return os.Remove(filepath.Join(l.baseDir, name))
 }
 
 func (l localFileSource) MoveToFolder(name, folder string) (string, error) {

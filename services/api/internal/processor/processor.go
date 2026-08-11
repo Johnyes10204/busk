@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -36,7 +37,18 @@ type Service struct {
 	workers    int
 	progressMu sync.RWMutex
 	progress   map[string]ProgressInfo
+	// transientRetries cuenta intentos consecutivos fallidos por fileName ante errores
+	// transitorios de red (conexión SSH caída, timeout, EOF inesperado). Se silencia el
+	// correo hasta llegar al umbral para no spamear ante blips y solo notificar cuando
+	// el corte es sostenido. Se resetea en cualquier terminal no-transitorio.
+	transientMu      sync.Mutex
+	transientRetries map[string]int
 }
+
+// transientRetryThreshold es el número de intentos consecutivos fallidos por red antes
+// de escalar a ERROR notificable. Con auto-scan cada 5 min, 3 intentos ≈ 15 min de corte
+// sostenido antes de despertar al operador — mejor que spamear en cada blip.
+const transientRetryThreshold = 3
 
 type queuedJob struct {
 	ID       string
@@ -81,11 +93,12 @@ type ruleRuntimeConfig struct {
 func New(st *store.Store) *Service {
 	workers := processorWorkersFromEnv()
 	s := &Service{
-		store:    st,
-		notifier: notify.NewFileNotifierFromEnv(),
-		jobs:     make(chan queuedJob, 256),
-		workers:  workers,
-		progress: make(map[string]ProgressInfo),
+		store:            st,
+		notifier:         notify.NewFileNotifierFromEnv(),
+		jobs:             make(chan queuedJob, 256),
+		workers:          workers,
+		progress:         make(map[string]ProgressInfo),
+		transientRetries: make(map[string]int),
 	}
 	log.Printf("[processor] inicializado workers=%d queue_capacity=%d", workers, cap(s.jobs))
 	log.Printf("[processor] PROCESSOR_READ_FULL_FILE_ON_ROW_ERRORS=%t", processorReadFullFileOnRowErrorsFromEnv())
@@ -478,6 +491,66 @@ func moveRemoteFile(src fileSource, fileName, folder string) string {
 	return dst
 }
 
+// deleteRemoteFile borra el archivo del origen. Se usa para duplicados por SHA-256: no
+// tiene sentido guardar en PROCESSED/ un archivo que no vamos a re-procesar. Devuelve
+// true si el borrado tuvo éxito.
+func deleteRemoteFile(src fileSource, fileName string) bool {
+	if err := src.Delete(fileName); err != nil {
+		log.Printf("[processor] DELETE falló file=%q err=%v", fileName, err)
+		return false
+	}
+	log.Printf("[processor] DELETE OK file=%q (duplicado por hash)", fileName)
+	return true
+}
+
+// isTransientNetworkError distingue fallas transitorias (conexión SSH caída, timeout,
+// EOF inesperado, pipe roto) de errores estructurales del archivo. Se usa para silenciar
+// reintentos ante blips de red y notificar solo cuando el corte es sostenido.
+func isTransientNetworkError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	for _, p := range []string{
+		"connection lost",
+		"connection reset",
+		"broken pipe",
+		"use of closed network connection",
+		"i/o timeout",
+		"unexpected eof",
+	} {
+		if strings.Contains(msg, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// bumpTransientRetry incrementa el contador de reintentos silenciosos para fileName y
+// devuelve el nuevo valor. Thread-safe.
+func (s *Service) bumpTransientRetry(fileName string) int {
+	s.transientMu.Lock()
+	defer s.transientMu.Unlock()
+	s.transientRetries[fileName]++
+	return s.transientRetries[fileName]
+}
+
+// clearTransientRetry pone el contador en cero. Se llama al terminar en cualquier
+// estado no-transitorio (PROCESSED, ERROR estructural, duplicado por hash) para que
+// un próximo blip de red vuelva a contar desde 1.
+func (s *Service) clearTransientRetry(fileName string) {
+	s.transientMu.Lock()
+	defer s.transientMu.Unlock()
+	delete(s.transientRetries, fileName)
+}
+
 func policyRowHasBlockingIssues(p *model.PolicyRecord) bool {
 	if strings.EqualFold(strings.TrimSpace(p.PolicyStatus), "MANUAL_REVIEW") {
 		return true
@@ -531,18 +604,42 @@ func (s *Service) processOne(src fileSource, job queuedJob) model.FileProcessRec
 		if rec.ProcessedPath == "" {
 			rec.ErrorReason += " (no se pudo mover a carpeta ERROR/ en SFTP)"
 		}
+		s.clearTransientRetry(fileName)
 		return rec
 	}
 	s.updateProgress(job.ID, job.FileName, "PROCESSING", 10, "producto/formato identificado", "", "")
 
 	reader, err := src.Open(fileName)
 	if err != nil {
+		// Si abrir el archivo falla por red transitoria, aplicamos el mismo silenciamiento
+		// que en la descarga: no notificar hasta acumular intentos sostenidos.
+		if isTransientNetworkError(err) {
+			count := s.bumpTransientRetry(fileName)
+			if count != transientRetryThreshold {
+				log.Printf("[processor] reintento silencioso al abrir archivo file=%q intento=%d/%d err=%v",
+					fileName, count, transientRetryThreshold, err)
+				rec.Status = model.FileStatusSkipped
+				rec.ErrorReason = fmt.Sprintf(
+					"reintento silencioso al abrir archivo: %s; intento %d/%d", err.Error(), count, transientRetryThreshold,
+				)
+				rec.SuppressPersist = true
+				return rec
+			}
+			log.Printf("[processor] apertura fallida persistente file=%q intentos=%d — notificando err=%v",
+				fileName, count, err)
+			rec.Status = model.FileStatusError
+			rec.ErrorReason = fmt.Sprintf(
+				"no se pudo abrir archivo remoto tras %d intentos consecutivos: %s", count, err.Error(),
+			)
+			return rec
+		}
 		rec.Status = model.FileStatusError
 		rec.ErrorReason = "no se pudo abrir archivo remoto: " + err.Error()
 		rec.ProcessedPath = moveRemoteFile(src, fileName, "ERROR")
 		if rec.ProcessedPath == "" {
 			rec.ErrorReason += " (no se pudo mover a carpeta ERROR/ en SFTP)"
 		}
+		s.clearTransientRetry(fileName)
 		return rec
 	}
 	defer reader.Close()
@@ -552,15 +649,54 @@ func (s *Service) processOne(src fileSource, job queuedJob) model.FileProcessRec
 	if err != nil {
 		if errors.Is(err, errDuplicateFileHash) {
 			// Dedup por hash: el archivo (mismo SHA-256) ya fue manejado en PROCESSED/SKIPPED/ERROR.
-			// No persistimos terminal, no enviamos correo — solo movemos el archivo para sacarlo de
-			// la raíz del SFTP y evitar que el próximo scan lo vuelva a levantar. El worker borra la
+			// No persistimos terminal, no enviamos correo — borramos el archivo en el SFTP para no
+			// dejar copias residuales de contenido que no se va a re-procesar. El worker borra la
 			// fila QUEUED al ver SuppressPersist.
 			rec.Status = model.FileStatusSkipped
 			rec.ErrorReason = "archivo omitido: mismo contenido (SHA-256) ya manejado en corrida previa"
 			rec.FileHash = fileHash
 			rec.ArchivePath = archivePath
-			rec.ProcessedPath = moveRemoteFile(src, fileName, "PROCESSED")
+			deleteRemoteFile(src, fileName)
+			rec.ProcessedPath = ""
 			rec.SuppressPersist = true
+			s.clearTransientRetry(fileName)
+			return rec
+		}
+		if isTransientNetworkError(err) {
+			// Error de red durante la descarga: no es problema del archivo, es transitorio.
+			// Silenciamos hasta acumular transientRetryThreshold intentos consecutivos y solo
+			// entonces notificamos. El archivo queda en la raíz para reintentar en el próximo scan.
+			count := s.bumpTransientRetry(fileName)
+			if count < transientRetryThreshold {
+				log.Printf("[processor] reintento silencioso por error de red file=%q intento=%d/%d err=%v",
+					fileName, count, transientRetryThreshold, err)
+				rec.Status = model.FileStatusSkipped
+				rec.ErrorReason = fmt.Sprintf(
+					"reintento silencioso: error de red transitorio (%s); intento %d/%d — el archivo queda en la raíz del SFTP",
+					err.Error(), count, transientRetryThreshold,
+				)
+				rec.SuppressPersist = true
+				return rec
+			}
+			if count > transientRetryThreshold {
+				log.Printf("[processor] silenciando error de red persistente file=%q intentos=%d (ya notificado) err=%v",
+					fileName, count, err)
+				rec.Status = model.FileStatusSkipped
+				rec.ErrorReason = fmt.Sprintf(
+					"silenciado: error de red persistente tras %d intentos (ya notificado)", count,
+				)
+				rec.SuppressPersist = true
+				return rec
+			}
+			log.Printf("[processor] error de red persistente file=%q intentos=%d — notificando err=%v",
+				fileName, count, err)
+			rec.Status = model.FileStatusError
+			rec.ErrorReason = fmt.Sprintf(
+				"error de red persistente tras %d intentos consecutivos: %s", count, err.Error(),
+			)
+			rec.FileHash = fileHash
+			rec.ArchivePath = archivePath
+			// No intentamos mover — la conexión probablemente está caída. El archivo queda en raíz.
 			return rec
 		}
 		rec.Status = model.FileStatusError
@@ -571,6 +707,7 @@ func (s *Service) processOne(src fileSource, job queuedJob) model.FileProcessRec
 		if rec.ProcessedPath == "" {
 			rec.ErrorReason += " | SFTP: no se pudo mover el archivo a ERROR/"
 		}
+		s.clearTransientRetry(fileName)
 		return rec
 	}
 	rec.ProductID = selectedProductID
@@ -687,6 +824,7 @@ func (s *Service) processOne(src fileSource, job queuedJob) model.FileProcessRec
 			rec.ErrorReason = msg
 		}
 	}
+	s.clearTransientRetry(fileName)
 	log.Printf("[processor] terminado OK file_id=%s file=%s dst=%s", rec.ID, rec.FileName, rec.ProcessedPath)
 	return rec
 }

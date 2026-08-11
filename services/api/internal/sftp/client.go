@@ -174,6 +174,12 @@ func (c *Client) OpenRelative(name string) (io.ReadCloser, error) {
 	return c.raw.Open(path.Join(c.baseDir, name))
 }
 
+// DeleteFile borra el archivo del baseDir del SFTP. Se usa para archivos duplicados
+// por SHA-256 que ya fueron manejados: no hay motivo para dejar copias residuales.
+func (c *Client) DeleteFile(name string) error {
+	return c.raw.Remove(path.Join(c.baseDir, name))
+}
+
 func (c *Client) MoveToFolder(name, folder string) (string, error) {
 	src := path.Join(c.baseDir, name)
 	dstDir := path.Join(c.baseDir, folder)

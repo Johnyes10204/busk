@@ -91,6 +91,50 @@ func (n *sendGridNotifier) NotifyFileProcessing(input FileEmailInput) error {
 	}
 }
 
+// originalFromArchive lee la copia local del archivo original que el procesador guardó al
+// descargarlo del SFTP (rec.ArchivePath) y la devuelve como emailAttachment. Se usa como
+// adjunto en errores genéricos (no de fila) para que el operador reciba el archivo tal
+// cual llegó — mucho más útil que un XLSX espejo con fila_excel=0 y un mensaje del sistema.
+// Devuelve nil si no hay ruta, el archivo no existe en disco, está vacío o fue borrado
+// (p.ej. tras un download parcial por caída de red).
+func (n *sendGridNotifier) originalFromArchive(input FileEmailInput) *emailAttachment {
+	path := strings.TrimSpace(input.ArchivePath)
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		log.Printf("[notify] original_miss file_id=%s path=%q err=%v", input.FileID, path, err)
+		return nil
+	}
+	if len(data) == 0 {
+		log.Printf("[notify] original_miss file_id=%s path=%q motivo=archivo_vacío", input.FileID, path)
+		return nil
+	}
+	filename := sanitizeAttachmentFilename(input.FileName)
+	if filename == "" {
+		filename = "archivo_original" + filepath.Ext(input.FileName)
+	}
+	return &emailAttachment{
+		data:     data,
+		filename: filename,
+		mime:     mimeForFile(input.FileName),
+	}
+}
+
+func mimeForFile(name string) string {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".xlsx":
+		return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	case ".xls":
+		return "application/vnd.ms-excel"
+	case ".csv":
+		return "text/csv"
+	default:
+		return "application/octet-stream"
+	}
+}
+
 // mirrorFromReportArchive lee el XLSX espejo que el procesador ya escribió a disco
 // (rec.ReportArchivePath) y lo devuelve como bytes. Se usa como fuente preferida del
 // adjunto para garantizar que el correo lleve exactamente el mismo Excel que se archivó
@@ -235,23 +279,24 @@ func (n *sendGridNotifier) processedSuccessAttachments(input FileEmailInput) ([]
 func (n *sendGridNotifier) notifyProcessingError(input FileEmailInput) error {
 	client := sendgrid.NewSendClient(n.apiKey)
 
-	// Fuente autorizada del adjunto: XLSX espejo archivado a disco por el procesador.
+	// Prioridad del adjunto en errores:
+	//   1) Espejo XLSX (rec.ReportArchivePath): existe solo cuando hubo novedades por fila
+	//      — es el reporte útil con OBSERVACIÓN por cada fila. Se prefiere si cabe.
+	//   2) Archivo original (rec.ArchivePath): la copia local del archivo tal cual llegó
+	//      del SFTP. Se manda en errores genéricos (no de fila) para que el operador
+	//      trabaje con el archivo real, no con un XLSX espejo con fila_excel=0.
+	//   3) Sin adjunto: si no hay ninguno de los dos (p.ej. descarga parcial por caída
+	//      de red), correo texto-solo con el motivo del error. Nunca stub engañoso.
 	xlsxBytes := n.mirrorFromReportArchive(input)
 	downloadURL := validationReportDownloadURL(input.FileID)
-
-	// Distinguimos tres escenarios para el cuerpo del correo:
-	//   - reporte cabe → se adjunta, cuerpo normal.
-	//   - reporte existe pero excede el límite del proveedor de correo → sin adjunto,
-	//     cuerpo indica el motivo y ofrece URL de descarga (nunca un stub engañoso).
-	//   - reporte no existe en disco → resumen mínimo con el motivo del error.
 	reportTooLarge := len(xlsxBytes) > 0 && len(xlsxBytes) > maxEmailAttachmentBytes
 	if reportTooLarge {
-		log.Printf("[notify] reporte excede el límite de SendGrid file_id=%s bytes=%d max=%d — se envía correo con URL",
+		log.Printf("[notify] espejo excede el límite de SendGrid file_id=%s bytes=%d max=%d — se envía correo con URL",
 			input.FileID, len(xlsxBytes), maxEmailAttachmentBytes)
 	}
 
-	send := func(attachments []emailAttachment, bodyMentionsReport, reportTooLarge bool) (statusCode int, body string, err error) {
-		msg := n.composeErrorMail(input, attachments, bodyMentionsReport, reportTooLarge, downloadURL)
+	send := func(attachments []emailAttachment, kind errorAttachmentKind) (statusCode int, body string, err error) {
+		msg := n.composeErrorMail(input, attachments, kind, downloadURL)
 		r, e := client.Send(msg)
 		if e != nil {
 			return 0, "", e
@@ -259,7 +304,7 @@ func (n *sendGridNotifier) notifyProcessingError(input FileEmailInput) error {
 		return r.StatusCode, r.Body, nil
 	}
 
-	trySend := func(attachments []emailAttachment, label string) (ok bool, status int, body string, err error) {
+	trySend := func(attachments []emailAttachment, kind errorAttachmentKind, label string) (ok bool, status int, body string, err error) {
 		total := 0
 		for _, a := range attachments {
 			total += len(a.data)
@@ -272,7 +317,7 @@ func (n *sendGridNotifier) notifyProcessingError(input FileEmailInput) error {
 				label, input.FileID, total, maxEmailAttachmentBytes)
 			return false, 0, "", nil
 		}
-		st, b, e := send(attachments, true, false)
+		st, b, e := send(attachments, kind)
 		if e != nil {
 			return false, st, b, e
 		}
@@ -284,14 +329,14 @@ func (n *sendGridNotifier) notifyProcessingError(input FileEmailInput) error {
 		return false, st, b, nil
 	}
 
-	// Caso 1: reporte cabe. Se intenta adjuntar (XLSX y, si es grande, ZIP).
+	// Caso 1: espejo XLSX útil y cabe → adjuntarlo (con fallback a ZIP si es grande).
 	if len(xlsxBytes) > 0 && !reportTooLarge {
 		for _, att := range emailAttachmentCandidates(input.FileName, input.FileID, xlsxBytes) {
 			label := "reporte-xlsx"
 			if strings.HasSuffix(strings.ToLower(att.filename), ".zip") {
 				label = "reporte-zip"
 			}
-			ok, st, body, err := trySend([]emailAttachment{att}, label)
+			ok, st, body, err := trySend([]emailAttachment{att}, errAttEspejo, label)
 			if err != nil {
 				return err
 			}
@@ -308,50 +353,70 @@ func (n *sendGridNotifier) notifyProcessingError(input FileEmailInput) error {
 					label, input.FileID, st, truncateForLog(body, 1800))
 			}
 		}
-		log.Printf("[notify] ADVERTENCIA: no se pudo adjuntar reporte file_id=%s bytes=%d — se enviará solo la URL de descarga",
+		log.Printf("[notify] ADVERTENCIA: no se pudo adjuntar espejo file_id=%s bytes=%d — se enviará solo la URL de descarga",
 			input.FileID, len(xlsxBytes))
 		reportTooLarge = true
 	}
 
-	// Caso 2: reporte existe pero es demasiado grande para SendGrid. Correo sin
+	// Caso 2: espejo existe pero es demasiado grande para SendGrid → correo sin
 	// adjunto con URL de descarga y mensaje claro. Nunca stub engañoso.
 	if reportTooLarge {
-		status, body, err := send(nil, true, true)
+		status, body, err := send(nil, errAttEspejoOversized)
 		if err != nil {
 			return err
 		}
 		if status >= 200 && status < 300 {
-			log.Printf("[notify] correo enviado con URL de descarga (reporte %d bytes excede límite) file_id=%s",
+			log.Printf("[notify] correo enviado con URL de descarga (espejo %d bytes excede límite) file_id=%s",
 				len(xlsxBytes), input.FileID)
 			return nil
 		}
 		return fmt.Errorf("sendgrid (correo con URL) status=%d body=%s", status, strings.TrimSpace(truncateForLog(body, 1800)))
 	}
 
-	// Caso 3: reporte no existe en disco. Adjuntamos resumen mínimo con el motivo
-	// del error (última red de seguridad para respetar la invariante "todo correo
-	// con adjunto").
-	log.Printf("[notify] sin reporte archivado en disco file_id=%s report_archive_path=%q — se envía resumen mínimo",
-		input.FileID, input.ReportArchivePath)
-	if att := n.summaryFallbackAttachment(input); att != nil {
-		if ok, _, _, err := trySend([]emailAttachment{*att}, "resumen-minimo"); err != nil {
+	// Caso 3: no hay espejo útil → error genérico. Adjuntamos el archivo ORIGINAL
+	// tal cual llegó del SFTP si aún lo tenemos en disco.
+	if att := n.originalFromArchive(input); att != nil {
+		ok, st, body, err := trySend([]emailAttachment{*att}, errAttOriginal, "original-sftp")
+		if err != nil {
 			return err
-		} else if ok {
+		}
+		if ok {
 			return nil
 		}
+		if st != 0 {
+			log.Printf("[notify] sendgrid rechazó original file_id=%s status=%d body=%s",
+				input.FileID, st, truncateForLog(body, 1800))
+		}
+	} else {
+		log.Printf("[notify] sin archivo original en disco file_id=%s archive_path=%q — se envía correo sin adjunto",
+			input.FileID, input.ArchivePath)
 	}
 
-	log.Printf("[notify] ADVERTENCIA: reintentando SIN adjunto file_id=%s", input.FileID)
-	status2, body2, err2 := send(nil, false, false)
+	// Caso 4: ni espejo ni original disponibles → correo texto solo con el motivo del error.
+	// (Sucede típicamente con caídas de red durante la descarga: el original quedó parcial
+	//  y se borró.)
+	status2, body2, err2 := send(nil, errAttNone)
 	if err2 != nil {
 		return err2
 	}
 	if status2 >= 200 && status2 < 300 {
-		log.Printf("[notify] correo enviado sin adjunto file_id=%s", input.FileID)
+		log.Printf("[notify] correo de error enviado sin adjunto file_id=%s", input.FileID)
 		return nil
 	}
-	return fmt.Errorf("sendgrid (reintento sin adjunto) status=%d body=%s", status2, strings.TrimSpace(truncateForLog(body2, 1800)))
+	return fmt.Errorf("sendgrid (sin adjunto) status=%d body=%s", status2, strings.TrimSpace(truncateForLog(body2, 1800)))
 }
+
+// errorAttachmentKind identifica qué adjunto (si hay) lleva el correo de error, y
+// determina qué texto va en el cuerpo. Se prefiere una enum a booleanos sueltos porque
+// los estados son mutuamente excluyentes.
+type errorAttachmentKind int
+
+const (
+	errAttNone            errorAttachmentKind = iota // sin adjunto
+	errAttEspejo                                     // XLSX espejo con novedades por fila
+	errAttEspejoOversized                            // espejo existe pero excede el límite → URL en el body
+	errAttOriginal                                   // archivo original tal cual llegó del SFTP
+)
 
 // emailAttachmentCandidates ordena .xlsx y .zip; ZIP primero si el libro supera emailZipPreferMinBytes.
 func emailAttachmentCandidates(fileName, fileID string, xlsxBytes []byte) []emailAttachment {
@@ -426,11 +491,15 @@ func truncateForLog(s string, max int) string {
 	return s[:max] + "…"
 }
 
-func (n *sendGridNotifier) composeErrorMail(input FileEmailInput, attachments []emailAttachment, bodyMentionsReport, reportTooLarge bool, downloadURL string) *sgmail.SGMailV3 {
+func (n *sendGridNotifier) composeErrorMail(input FileEmailInput, attachments []emailAttachment, kind errorAttachmentKind, downloadURL string) *sgmail.SGMailV3 {
 	from := sgmail.NewEmail("Busk Seguros", n.from)
 	subject := fmt.Sprintf("[Busk Seguros] Novedades en archivo %s", strings.TrimSpace(input.FileName))
-	if strings.EqualFold(strings.TrimSpace(input.Status), "SKIPPED") {
+	switch {
+	case strings.EqualFold(strings.TrimSpace(input.Status), "SKIPPED"):
 		subject = fmt.Sprintf("[Busk Seguros] Archivo omitido: %s", strings.TrimSpace(input.FileName))
+	case kind == errAttOriginal || kind == errAttNone:
+		// Errores genéricos (no de fila): el asunto refleja que hay que revisar el sistema.
+		subject = fmt.Sprintf("[Busk Seguros] Error procesando archivo %s", strings.TrimSpace(input.FileName))
 	}
 
 	message := sgmail.NewV3Mail()
@@ -456,8 +525,13 @@ func (n *sendGridNotifier) composeErrorMail(input FileEmailInput, attachments []
 		adjunto = true
 	}
 
-	plainText := buildPlainBody(input, adjunto, bodyMentionsReport, reportTooLarge, downloadURL)
-	htmlBody := buildHTMLBody(input, adjunto, bodyMentionsReport, reportTooLarge, downloadURL)
+	adjuntoEspejo := adjunto && kind == errAttEspejo
+	adjuntoOriginal := adjunto && kind == errAttOriginal
+	reportTooLarge := kind == errAttEspejoOversized
+	bodyMentionsReport := kind == errAttEspejo || kind == errAttEspejoOversized
+
+	plainText := buildPlainBody(input, adjuntoEspejo, adjuntoOriginal, bodyMentionsReport, reportTooLarge, downloadURL)
+	htmlBody := buildHTMLBody(input, adjuntoEspejo, adjuntoOriginal, bodyMentionsReport, reportTooLarge, downloadURL)
 	message.AddContent(sgmail.NewContent("text/plain", plainText))
 	message.AddContent(sgmail.NewContent("text/html", htmlBody))
 	return message
@@ -511,12 +585,13 @@ type reportEmailData struct {
 	FilasDuplicadas     int
 	TieneInforme        bool
 	AdjuntoExcel        bool
+	AdjuntoOriginal     bool
 	ReporteMuyGrande    bool
 	DescargaInformeURL  string
 	DetalleCarga        string
 }
 
-func buildReportEmailData(input FileEmailInput, adjuntoExcel, reporteMuyGrande bool, downloadURL string) reportEmailData {
+func buildReportEmailData(input FileEmailInput, adjuntoExcel, adjuntoOriginal, reporteMuyGrande bool, downloadURL string) reportEmailData {
 	data := reportEmailData{
 		FileName:           strings.TrimSpace(input.FileName),
 		ProductID:          emptyFallback(input.ProductID, "No identificado"),
@@ -525,6 +600,7 @@ func buildReportEmailData(input FileEmailInput, adjuntoExcel, reporteMuyGrande b
 		ResumenOperacion:   "El archivo no pudo completar el procesamiento automático.",
 		MensajePrincipal:   "Se registró un error durante el procesamiento. Revise el detalle indicado más abajo.",
 		AdjuntoExcel:       adjuntoExcel,
+		AdjuntoOriginal:    adjuntoOriginal,
 		ReporteMuyGrande:   reporteMuyGrande,
 		DescargaInformeURL: strings.TrimSpace(downloadURL),
 		DetalleCarga:       strings.TrimSpace(input.ErrorReason),
@@ -538,6 +614,11 @@ func buildReportEmailData(input FileEmailInput, adjuntoExcel, reporteMuyGrande b
 
 	report, ok := parseValidationReport(input.ValidationReportJSON)
 	if !ok {
+		if adjuntoOriginal {
+			// Error genérico: no hay reporte por fila, se adjunta el archivo original.
+			data.MensajePrincipal = "El archivo no pudo procesarse por un error del sistema. Se adjunta el archivo original tal cual llegó del SFTP para su revisión."
+			data.ResumenOperacion = "Error de sistema — requiere revisión técnica."
+		}
 		return data
 	}
 
@@ -581,8 +662,8 @@ func etiquetaEstadoArchivo(status string) string {
 	}
 }
 
-func buildPlainBody(input FileEmailInput, adjuntoExcel, tieneInforme, reporteMuyGrande bool, downloadURL string) string {
-	d := buildReportEmailData(input, adjuntoExcel, reporteMuyGrande, downloadURL)
+func buildPlainBody(input FileEmailInput, adjuntoExcel, adjuntoOriginal, tieneInforme, reporteMuyGrande bool, downloadURL string) string {
+	d := buildReportEmailData(input, adjuntoExcel, adjuntoOriginal, reporteMuyGrande, downloadURL)
 	var b strings.Builder
 	b.WriteString("Busk Seguros — Informe de procesamiento de archivo\n")
 	b.WriteString(strings.Repeat("=", 48) + "\n\n")
@@ -603,9 +684,12 @@ func buildPlainBody(input FileEmailInput, adjuntoExcel, tieneInforme, reporteMuy
 		b.WriteString("\n")
 	}
 	b.WriteString("Detalle del sistema:\n" + d.DetalleCarga + "\n\n")
-	if adjuntoExcel {
+	switch {
+	case adjuntoExcel:
 		b.WriteString("Adjunto: Excel espejo del archivo original con las columnas OBSERVACIÓN y novedades por fila.\n\n")
-	} else if reporteMuyGrande {
+	case adjuntoOriginal:
+		b.WriteString("Adjunto: archivo original tal cual llegó del SFTP, para su revisión manual.\n\n")
+	case reporteMuyGrande:
 		b.WriteString("Aviso importante: el reporte de novedades supera el tamaño máximo permitido por el proveedor de correo (~28 MB), por eso este mensaje no lleva adjunto.\n")
 		b.WriteString("El reporte completo (espejo del archivo original con OBSERVACIÓN y novedades por fila) está disponible para descarga:\n")
 		if d.DescargaInformeURL != "" {
@@ -613,25 +697,27 @@ func buildPlainBody(input FileEmailInput, adjuntoExcel, tieneInforme, reporteMuy
 		} else {
 			b.WriteString("Solicítelo al equipo técnico con file_id=" + strings.TrimSpace(input.FileID) + " (no está configurada la URL pública API_PUBLIC_BASE_URL).\n\n")
 		}
-	} else if tieneInforme && d.DescargaInformeURL != "" {
+	case tieneInforme && d.DescargaInformeURL != "":
 		b.WriteString("El adjunto no pudo enviarse. Descargue el informe Excel aquí:\n")
 		b.WriteString(d.DescargaInformeURL + "\n\n")
-	} else if tieneInforme {
+	case tieneInforme:
 		b.WriteString("El adjunto no pudo enviarse. Solicite el Excel al equipo técnico con file_id=" + strings.TrimSpace(input.FileID) + ".\n\n")
+	default:
+		b.WriteString("Este mensaje no lleva adjunto. Revise el detalle del sistema arriba para el motivo del error.\n\n")
 	}
 	b.WriteString("— Busk Seguros · Procesamiento automático de inclusiones\n")
 	return strings.TrimSpace(b.String())
 }
 
-func buildHTMLBody(input FileEmailInput, adjuntoExcel, tieneInforme, reporteMuyGrande bool, downloadURL string) string {
-	data := buildReportEmailData(input, adjuntoExcel, reporteMuyGrande, downloadURL)
+func buildHTMLBody(input FileEmailInput, adjuntoExcel, adjuntoOriginal, tieneInforme, reporteMuyGrande bool, downloadURL string) string {
+	data := buildReportEmailData(input, adjuntoExcel, adjuntoOriginal, reporteMuyGrande, downloadURL)
 	tpl, err := template.New("error-email").Parse(errorEmailTemplate)
 	if err != nil {
-		return strings.ReplaceAll(buildPlainBody(input, adjuntoExcel, tieneInforme, reporteMuyGrande, downloadURL), "\n", "<br>")
+		return strings.ReplaceAll(buildPlainBody(input, adjuntoExcel, adjuntoOriginal, tieneInforme, reporteMuyGrande, downloadURL), "\n", "<br>")
 	}
 	var b bytes.Buffer
 	if err := tpl.Execute(&b, data); err != nil {
-		return strings.ReplaceAll(buildPlainBody(input, adjuntoExcel, tieneInforme, reporteMuyGrande, downloadURL), "\n", "<br>")
+		return strings.ReplaceAll(buildPlainBody(input, adjuntoExcel, adjuntoOriginal, tieneInforme, reporteMuyGrande, downloadURL), "\n", "<br>")
 	}
 	return b.String()
 }
@@ -790,12 +876,14 @@ const errorEmailTemplate = `
               <p style="margin:0;font-size:14px;line-height:1.5;color:#5c4a00;">
                 {{if .AdjuntoExcel}}
                 <strong>Acción requerida:</strong> revise el Excel adjunto (espejo del archivo original con columnas OBSERVACIÓN y novedades).
+                {{else if .AdjuntoOriginal}}
+                <strong>Acción requerida:</strong> revise el archivo original adjunto (tal cual llegó del SFTP) y el detalle del sistema para identificar el motivo.
                 {{else if .ReporteMuyGrande}}
                 <strong>Acción requerida:</strong> descargue el reporte completo desde el enlace indicado más abajo. El adjunto no se incluye porque supera el tamaño máximo del proveedor de correo (~28 MB).
                 {{else if .DescargaInformeURL}}
                 <strong>Acción requerida:</strong> descargue el informe Excel desde el enlace indicado más abajo (el adjunto no pudo enviarse por tamaño).
                 {{else}}
-                <strong>Acción requerida:</strong> revise el archivo en el panel de administración o vuelva a procesar cuando esté corregido.
+                <strong>Acción requerida:</strong> revise el detalle del sistema para identificar el motivo del error. Este mensaje no lleva adjunto.
                 {{end}}
               </p>
             </div>
@@ -826,6 +914,12 @@ const errorEmailTemplate = `
             <div style="background:#eef4fc;padding:16px;border-radius:6px;margin-bottom:8px;">
               <p style="margin:0;font-size:14px;line-height:1.5;color:#0b3d91;">
                 <strong>Informe adjunto (Excel):</strong> espejo del archivo original con las columnas OBSERVACIÓN y novedades por fila.
+              </p>
+            </div>
+            {{else if .AdjuntoOriginal}}
+            <div style="background:#eef4fc;padding:16px;border-radius:6px;margin-bottom:8px;">
+              <p style="margin:0;font-size:14px;line-height:1.5;color:#0b3d91;">
+                <strong>Archivo adjunto:</strong> archivo original tal cual llegó del SFTP, para su revisión manual.
               </p>
             </div>
             {{else if .ReporteMuyGrande}}
