@@ -256,6 +256,12 @@ func (s *Service) ScanAndEnqueue() (int, error) {
 		if !isSpreadsheet(name) {
 			continue
 		}
+		if hasHandledPrefix(name) {
+			// Archivos con prefijo ERROR-YYYYMMDDHHMMSS- o PROCESSED-YYYYMMDDHHMMSS- ya fueron
+			// manejados por una corrida previa (renombrados in-place como fallback del MOVE).
+			// No se re-encolan; quedan en la raíz solo como marca visible para el operador.
+			continue
+		}
 		candidates = append(candidates, name)
 	}
 
@@ -328,6 +334,12 @@ func (s *Service) ScanAndEnqueueLocal(dir string) (int, error) {
 		}
 		name := e.Name()
 		if !isSpreadsheet(name) {
+			continue
+		}
+		if hasHandledPrefix(name) {
+			// Archivos con prefijo ERROR-YYYYMMDDHHMMSS- o PROCESSED-YYYYMMDDHHMMSS- ya fueron
+			// manejados por una corrida previa (renombrados in-place como fallback del MOVE).
+			// No se re-encolan; quedan en la raíz solo como marca visible para el operador.
 			continue
 		}
 		candidates = append(candidates, name)
@@ -478,19 +490,6 @@ func (s *Service) processByName(job queuedJob) model.FileProcessRecord {
 	return rec
 }
 
-// moveRemoteFile renombia el archivo desde la raíz del origen (SFTP o local) a la subcarpeta
-// ERROR o PROCESSED. Si falla (permisos, carpeta, archivo ya movido, etc.), devuelve "" y
-// deja trazado en log para operación manual.
-func moveRemoteFile(src fileSource, fileName, folder string) string {
-	dst, err := src.MoveToFolder(fileName, folder)
-	if err != nil {
-		log.Printf("[processor] MOVE falló file=%q dest_folder=%q err=%v", fileName, folder, err)
-		return ""
-	}
-	log.Printf("[processor] MOVE OK file=%q -> %s", fileName, dst)
-	return dst
-}
-
 // deleteRemoteFile borra el archivo del origen. Se usa para duplicados por SHA-256: no
 // tiene sentido guardar en PROCESSED/ un archivo que no vamos a re-procesar. Devuelve
 // true si el borrado tuvo éxito.
@@ -503,11 +502,15 @@ func deleteRemoteFile(src fileSource, fileName string) bool {
 	return true
 }
 
-// disposeRemoteToError intenta mover el archivo a la subcarpeta ERROR/ del SFTP; si el
-// MOVE falla (permisos, colisión no resoluble, carpeta inexistente), cae a DELETE para
-// no dejar el archivo huérfano en la raíz — si no, cada auto-scan lo levantaría de nuevo
-// y generaría otro correo de ERROR. Devuelve la ruta destino en el SFTP ("" si terminó
-// borrado o si ambas operaciones fallaron). Anexa el motivo al errorReason del rec.
+// disposeRemoteToError intenta sacar el archivo de la raíz del SFTP con la siguiente
+// cascada de fallbacks:
+//  1) MOVE a carpeta ERROR/ (comportamiento preferido cuando los permisos alcanzan).
+//  2) Si el MOVE falla (típicamente permisos de mkdir/subcarpeta), rename in-place con
+//     prefijo "ERROR-YYYYMMDDHHMMSS-" — casi siempre funciona porque no requiere
+//     permisos sobre subcarpetas y el scan filtra ese prefijo para no re-procesarlo.
+//  3) Si el rename también falla, DELETE — última red para no dejar el archivo huérfano
+//     en la raíz esperando el próximo scan y generando correos duplicados.
+// Anexa al ErrorReason el detalle de cada fallo intermedio.
 func disposeRemoteToError(src fileSource, fileName string, rec *model.FileProcessRecord) {
 	dst, moveErr := src.MoveToFolder(fileName, "ERROR")
 	if moveErr == nil {
@@ -515,17 +518,73 @@ func disposeRemoteToError(src fileSource, fileName string, rec *model.FileProces
 		rec.ProcessedPath = dst
 		return
 	}
-	log.Printf("[processor] MOVE falló file=%q dest_folder=ERROR err=%v — intentando DELETE fallback",
+	log.Printf("[processor] MOVE falló file=%q dest_folder=ERROR err=%v — intentando rename in-place",
 		fileName, moveErr)
-	if delErr := src.Delete(fileName); delErr != nil {
-		log.Printf("[processor] DELETE fallback también falló file=%q err=%v", fileName, delErr)
-		appendErrorReason(rec, fmt.Sprintf("SFTP: no se pudo mover a ERROR/ (%s) ni borrar (%s)", moveErr, delErr))
-		rec.ProcessedPath = ""
+	if newName, renameErr := src.RenameInPlace(fileName, "ERROR"); renameErr == nil {
+		log.Printf("[processor] RENAME in-place OK file=%q -> %s (fallback tras MOVE ERROR/ fallido)", fileName, newName)
+		appendErrorReason(rec, fmt.Sprintf("SFTP: MOVE a ERROR/ falló (%s), archivo renombrado a %s", moveErr, newName))
+		rec.ProcessedPath = newName
 		return
+	} else {
+		log.Printf("[processor] RENAME in-place también falló file=%q err=%v — intentando DELETE",
+			fileName, renameErr)
+		if delErr := src.Delete(fileName); delErr != nil {
+			log.Printf("[processor] DELETE también falló file=%q err=%v", fileName, delErr)
+			appendErrorReason(rec, fmt.Sprintf(
+				"SFTP: no se pudo mover a ERROR/ (%s), renombrar (%s) ni borrar (%s)",
+				moveErr, renameErr, delErr,
+			))
+			rec.ProcessedPath = ""
+			return
+		}
+		log.Printf("[processor] DELETE OK file=%q (último fallback tras MOVE y RENAME fallidos)", fileName)
+		appendErrorReason(rec, fmt.Sprintf(
+			"SFTP: MOVE (%s) y RENAME (%s) fallaron, archivo eliminado del origen",
+			moveErr, renameErr,
+		))
+		rec.ProcessedPath = ""
 	}
-	log.Printf("[processor] DELETE OK file=%q (fallback tras MOVE ERROR/ fallido)", fileName)
-	appendErrorReason(rec, fmt.Sprintf("SFTP: MOVE a ERROR/ falló (%s), archivo eliminado del origen", moveErr))
-	rec.ProcessedPath = ""
+}
+
+// disposeRemoteToProcessed sigue la misma cascada que disposeRemoteToError pero SIN
+// borrar como último recurso: si un archivo se procesó correctamente y no se pudo mover
+// ni renombrar, es mejor dejarlo en la raíz para revisión manual que perderlo.
+// Devuelve la ruta destino ("" si ambos fallaron) y un mensaje de advertencia opcional.
+func disposeRemoteToProcessed(src fileSource, fileName string) (string, string) {
+	dst, moveErr := src.MoveToFolder(fileName, "PROCESSED")
+	if moveErr == nil {
+		log.Printf("[processor] MOVE OK file=%q -> %s", fileName, dst)
+		return dst, ""
+	}
+	log.Printf("[processor] MOVE falló file=%q dest_folder=PROCESSED err=%v — intentando rename in-place",
+		fileName, moveErr)
+	if newName, renameErr := src.RenameInPlace(fileName, "PROCESSED"); renameErr == nil {
+		log.Printf("[processor] RENAME in-place OK file=%q -> %s (fallback tras MOVE PROCESSED/ fallido)", fileName, newName)
+		return newName, fmt.Sprintf("SFTP: MOVE a PROCESSED/ falló (%s), archivo renombrado a %s", moveErr, newName)
+	} else {
+		log.Printf("[processor] RENAME in-place también falló file=%q err=%v — se deja en la raíz para revisión manual",
+			fileName, renameErr)
+		return "", fmt.Sprintf(
+			"pólizas registradas pero el archivo no se pudo mover a PROCESSED/ (%s) ni renombrar (%s); revisar permisos y mover manualmente",
+			moveErr, renameErr,
+		)
+	}
+}
+
+// handledPrefixes son los prefijos que renameInPlace agrega a archivos ya manejados.
+// El scan debe filtrarlos para no volver a encolar el mismo archivo en cada corrida.
+var handledPrefixes = []string{"ERROR-", "PROCESSED-"}
+
+// hasHandledPrefix indica si el nombre empieza con alguno de los prefijos que agrega
+// disposeRemote* al renombrar in-place. Case-insensitive por seguridad.
+func hasHandledPrefix(name string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(name))
+	for _, p := range handledPrefixes {
+		if strings.HasPrefix(upper, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // appendErrorReason concatena un mensaje al ErrorReason preservando lo previo.
@@ -875,14 +934,10 @@ func (s *Service) processOne(src fileSource, job queuedJob) model.FileProcessRec
 	}
 
 	rec.Status = model.FileStatusProcessed
-	rec.ProcessedPath = moveRemoteFile(src, fileName, "PROCESSED")
-	if rec.ProcessedPath == "" {
-		msg := "advertencia: pólizas registradas pero el archivo no se pudo mover a PROCESSED/ en SFTP (revisar permisos o mover manualmente)"
-		if rec.ErrorReason != "" {
-			rec.ErrorReason += " | " + msg
-		} else {
-			rec.ErrorReason = msg
-		}
+	dst, warn := disposeRemoteToProcessed(src, fileName)
+	rec.ProcessedPath = dst
+	if warn != "" {
+		appendErrorReason(&rec, "advertencia: "+warn)
 	}
 	s.clearTransientRetry(fileName)
 	log.Printf("[processor] terminado OK file_id=%s file=%s dst=%s", rec.ID, rec.FileName, rec.ProcessedPath)

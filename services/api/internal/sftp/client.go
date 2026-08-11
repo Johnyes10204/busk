@@ -180,6 +180,21 @@ func (c *Client) DeleteFile(name string) error {
 	return c.raw.Remove(path.Join(c.baseDir, name))
 }
 
+// RenameInPlace renombra el archivo dentro del mismo baseDir agregando un prefijo con
+// timestamp UTC (formato "<prefix>-YYYYMMDDHHMMSS-<name>"). Fallback del MOVE a subcarpeta
+// cuando los permisos del usuario SFTP no alcanzan para crear/escribir en ERROR|PROCESSED/
+// pero sí permiten renombrar dentro del mismo directorio. Devuelve el nombre nuevo (sin path).
+func (c *Client) RenameInPlace(name, prefix string) (string, error) {
+	ts := time.Now().UTC().Format("20060102150405")
+	newName := fmt.Sprintf("%s-%s-%s", prefix, ts, name)
+	src := path.Join(c.baseDir, name)
+	dst := path.Join(c.baseDir, newName)
+	if err := c.raw.Rename(src, dst); err != nil {
+		return "", fmt.Errorf("rename in place %s -> %s: %w", src, dst, err)
+	}
+	return newName, nil
+}
+
 func (c *Client) MoveToFolder(name, folder string) (string, error) {
 	src := path.Join(c.baseDir, name)
 	dstDir := path.Join(c.baseDir, folder)

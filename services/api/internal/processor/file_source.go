@@ -16,6 +16,7 @@ import (
 type fileSource interface {
 	Open(name string) (io.ReadCloser, error)
 	MoveToFolder(name, folder string) (string, error)
+	RenameInPlace(name, prefix string) (string, error)
 	Delete(name string) error
 	Close()
 }
@@ -35,6 +36,10 @@ func (s sftpFileSource) MoveToFolder(name, folder string) (string, error) {
 
 func (s sftpFileSource) Delete(name string) error {
 	return s.c.DeleteFile(name)
+}
+
+func (s sftpFileSource) RenameInPlace(name, prefix string) (string, error) {
+	return s.c.RenameInPlace(name, prefix)
 }
 
 func (s sftpFileSource) Close() {
@@ -74,6 +79,17 @@ func (l localFileSource) Open(name string) (io.ReadCloser, error) {
 
 func (l localFileSource) Delete(name string) error {
 	return os.Remove(filepath.Join(l.baseDir, name))
+}
+
+func (l localFileSource) RenameInPlace(name, prefix string) (string, error) {
+	ts := time.Now().UTC().Format("20060102150405")
+	newName := fmt.Sprintf("%s-%s-%s", prefix, ts, name)
+	src := filepath.Join(l.baseDir, name)
+	dst := filepath.Join(l.baseDir, newName)
+	if err := os.Rename(src, dst); err != nil {
+		return "", fmt.Errorf("rename in place %s -> %s: %w", src, dst, err)
+	}
+	return newName, nil
 }
 
 func (l localFileSource) MoveToFolder(name, folder string) (string, error) {
