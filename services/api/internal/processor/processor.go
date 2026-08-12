@@ -602,32 +602,36 @@ func appendErrorReason(rec *model.FileProcessRecord, msg string) {
 // downloadOriginalOnly descarga el archivo del origen a FILES_ARCHIVE_DIR sin parsear
 // ni validar. Se usa cuando queremos preservar el archivo original para adjuntarlo al
 // correo antes de que un error temprano (p. ej. "no existe producto configurado") nos
-// impida llegar a validateFile. Devuelve la ruta local o "" si la descarga falló.
-func downloadOriginalOnly(src fileSource, fileID, fileName string) string {
+// impida llegar a validateFile. Devuelve la ruta local (o "" si la descarga falló) y el
+// SHA-256 del contenido (o "" si no se pudo calcular). El hash permite deduplicar en el
+// siguiente scan aun cuando el flujo no alcanzó validateFile.
+func downloadOriginalOnly(src fileSource, fileID, fileName string) (string, string) {
 	reader, err := src.Open(fileName)
 	if err != nil {
 		log.Printf("[processor] downloadOriginalOnly abrir remoto falló file=%q err=%v", fileName, err)
-		return ""
+		return "", ""
 	}
 	defer reader.Close()
 	archivePath, err := buildArchivePath(fileID, fileName)
 	if err != nil {
 		log.Printf("[processor] downloadOriginalOnly buildArchivePath falló file=%q err=%v", fileName, err)
-		return ""
+		return "", ""
 	}
 	archive, err := os.Create(archivePath)
 	if err != nil {
 		log.Printf("[processor] downloadOriginalOnly create archive falló file=%q err=%v", fileName, err)
-		return ""
+		return "", ""
 	}
 	defer archive.Close()
-	if _, err := io.Copy(archive, reader); err != nil {
+	hasher := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(archive, hasher), reader); err != nil {
 		log.Printf("[processor] downloadOriginalOnly copy falló file=%q err=%v", fileName, err)
 		_ = os.Remove(archivePath)
-		return ""
+		return "", ""
 	}
-	log.Printf("[processor] downloadOriginalOnly OK file=%q archive=%s", fileName, archivePath)
-	return archivePath
+	fileHash := hex.EncodeToString(hasher.Sum(nil))
+	log.Printf("[processor] downloadOriginalOnly OK file=%q archive=%s sha256=%s", fileName, archivePath, fileHash)
+	return archivePath, fileHash
 }
 
 // isTransientNetworkError distingue fallas transitorias (conexión SSH caída, timeout,
@@ -694,6 +698,32 @@ func policyRowHasBlockingIssues(p *model.PolicyRecord) bool {
 	return false
 }
 
+// policyRowBlockingIsOnlyHistoricalDuplicate devuelve true cuando la fila bloquea SOLO por
+// "OP BT DUPLICADO: YA PROCESADO" (crédito ya cargado en una corrida previa) y no por ningún
+// otro motivo. No cuenta MANUAL_REVIEW ni otras incidencias — cualquier otra causa de bloqueo
+// devuelve false.
+func policyRowBlockingIsOnlyHistoricalDuplicate(p *model.PolicyRecord) bool {
+	if strings.EqualFold(strings.TrimSpace(p.PolicyStatus), "MANUAL_REVIEW") {
+		return false
+	}
+	var notes []string
+	if strings.TrimSpace(p.ValidationJSON) != "" {
+		_ = json.Unmarshal([]byte(p.ValidationJSON), &notes)
+	}
+	dupTag := mensajeCreditoDuplicadoHistorico()
+	blockingCount := 0
+	for _, n := range notes {
+		if !noteIsBlocking(n) {
+			continue
+		}
+		if !strings.Contains(n, dupTag) {
+			return false
+		}
+		blockingCount++
+	}
+	return blockingCount > 0
+}
+
 func policiesRowSetHasBlockingIssues(policies []model.PolicyRecord) bool {
 	for i := range policies {
 		if policyRowHasBlockingIssues(&policies[i]) {
@@ -701,6 +731,25 @@ func policiesRowSetHasBlockingIssues(policies []model.PolicyRecord) bool {
 		}
 	}
 	return false
+}
+
+// policiesAllBlockingAreHistoricalDuplicate devuelve true SOLO si el archivo es una re-subida
+// pura: todas las filas bloquean, y todas lo hacen únicamente por "OP BT DUPLICADO: YA
+// PROCESADO". Si aparece aunque sea una fila sin bloqueo (contenido nuevo que quedaría sin
+// cargar por el file-level gate) o con otra incidencia real (edad, prima, etc.), devolvemos
+// false para que se notifique como ERROR normal — el operador tiene que enterarse.
+func policiesAllBlockingAreHistoricalDuplicate(policies []model.PolicyRecord) bool {
+	hasBlocking := false
+	for i := range policies {
+		if !policyRowHasBlockingIssues(&policies[i]) {
+			return false
+		}
+		hasBlocking = true
+		if !policyRowBlockingIsOnlyHistoricalDuplicate(&policies[i]) {
+			return false
+		}
+	}
+	return hasBlocking
 }
 
 func countPoliciesBlockingIssues(policies []model.PolicyRecord) int {
@@ -729,10 +778,26 @@ func (s *Service) processOne(src fileSource, job queuedJob) model.FileProcessRec
 		rec.ErrorReason = "no existe producto configurado para el prefijo del archivo"
 		// Descargamos el archivo original para adjuntarlo al correo — sin producto configurado
 		// no llegamos a validateFile, así que sin este paso el operador recibiría el mail sin
-		// ningún adjunto útil. Si la descarga falla igual seguimos: el correo llevará el motivo
-		// en texto y disposeRemoteToError intentará limpiar el SFTP.
-		if archivePath := downloadOriginalOnly(src, rec.ID, fileName); archivePath != "" {
+		// ningún adjunto útil. La descarga también calcula el SHA-256 para que, si el archivo
+		// se queda en la raíz porque el dispose falla, el próximo scan detecte el duplicado y
+		// no vuelva a notificar cada 5 minutos.
+		archivePath, fileHash := downloadOriginalOnly(src, rec.ID, fileName)
+		if archivePath != "" {
 			rec.ArchivePath = archivePath
+		}
+		if fileHash != "" {
+			rec.FileHash = fileHash
+			if s.store.FileHashAlreadyHandled(fileHash) {
+				// Mismo contenido ya notificado antes como "sin producto configurado" (o cualquier
+				// otro terminal). No re-notificamos: silenciamos e intentamos borrar del SFTP para
+				// no dejar el archivo dando vueltas cada scan.
+				rec.Status = model.FileStatusSkipped
+				rec.ErrorReason = "archivo omitido: mismo contenido (SHA-256) ya notificado en corrida previa (sin producto configurado)"
+				rec.SuppressPersist = true
+				deleteRemoteFile(src, fileName)
+				s.clearTransientRetry(fileName)
+				return rec
+			}
 		}
 		disposeRemoteToError(src, fileName, &rec)
 		s.clearTransientRetry(fileName)
@@ -845,6 +910,26 @@ func (s *Service) processOne(src fileSource, job queuedJob) model.FileProcessRec
 	rec.ValidationReportJSON = ""
 
 	if policiesRowSetHasBlockingIssues(policies) {
+		// Corto-circuito para re-subidas del mismo contenido: si TODAS las filas que bloquean lo
+		// hacen únicamente por "OP BT DUPLICADO: YA PROCESADO" (créditos ya cargados en una
+		// corrida previa), no es un error nuevo, es el mismo lote llegando otra vez. Silenciamos
+		// (SKIPPED sin correo) y sacamos el archivo del SFTP para que el próximo scan no lo vuelva
+		// a tocar. Sin esto, cada 5 minutos el operador recibía el mismo correo listando "YA
+		// PROCESADO" para cada fila.
+		if policiesAllBlockingAreHistoricalDuplicate(policies) {
+			nDup := countPoliciesBlockingIssues(policies)
+			log.Printf("[processor] re-subida detectada file_id=%s file=%s filas_ya_procesadas=%d — silenciando",
+				rec.ID, fileName, nDup)
+			rec.Status = model.FileStatusSkipped
+			rec.ErrorReason = fmt.Sprintf(
+				"archivo omitido: %d filas ya fueron procesadas en carga previa (re-subida del mismo contenido)",
+				nDup,
+			)
+			rec.SuppressPersist = true
+			deleteRemoteFile(src, fileName)
+			s.clearTransientRetry(fileName)
+			return rec
+		}
 		nIssue := countPoliciesBlockingIssues(policies)
 		summary := fmt.Sprintf(
 			"carga omitida: %d filas con incidencias; ninguna póliza persistida (informe en validation_report)",
