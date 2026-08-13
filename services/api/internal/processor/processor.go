@@ -490,26 +490,14 @@ func (s *Service) processByName(job queuedJob) model.FileProcessRecord {
 	return rec
 }
 
-// deleteRemoteFile borra el archivo del origen. Se usa para duplicados por SHA-256: no
-// tiene sentido guardar en PROCESSED/ un archivo que no vamos a re-procesar. Devuelve
-// true si el borrado tuvo éxito.
-func deleteRemoteFile(src fileSource, fileName string) bool {
-	if err := src.Delete(fileName); err != nil {
-		log.Printf("[processor] DELETE falló file=%q err=%v", fileName, err)
-		return false
-	}
-	log.Printf("[processor] DELETE OK file=%q (duplicado por hash)", fileName)
-	return true
-}
-
 // disposeRemoteToError intenta sacar el archivo de la raíz del SFTP con la siguiente
 // cascada de fallbacks:
 //  1) MOVE a carpeta ERROR/ (comportamiento preferido cuando los permisos alcanzan).
 //  2) Si el MOVE falla (típicamente permisos de mkdir/subcarpeta), rename in-place con
 //     prefijo "ERROR-YYYYMMDDHHMMSS-" — casi siempre funciona porque no requiere
 //     permisos sobre subcarpetas y el scan filtra ese prefijo para no re-procesarlo.
-//  3) Si el rename también falla, DELETE — última red para no dejar el archivo huérfano
-//     en la raíz esperando el próximo scan y generando correos duplicados.
+//  3) Si el rename también falla, el archivo queda en la raíz para revisión manual — nunca
+//     se borra del SFTP.
 // Anexa al ErrorReason el detalle de cada fallo intermedio.
 func disposeRemoteToError(src fileSource, fileName string, rec *model.FileProcessRecord) {
 	dst, moveErr := src.MoveToFolder(fileName, "ERROR")
@@ -526,20 +514,10 @@ func disposeRemoteToError(src fileSource, fileName string, rec *model.FileProces
 		rec.ProcessedPath = newName
 		return
 	} else {
-		log.Printf("[processor] RENAME in-place también falló file=%q err=%v — intentando DELETE",
+		log.Printf("[processor] RENAME in-place también falló file=%q err=%v — se deja en la raíz para revisión manual",
 			fileName, renameErr)
-		if delErr := src.Delete(fileName); delErr != nil {
-			log.Printf("[processor] DELETE también falló file=%q err=%v", fileName, delErr)
-			appendErrorReason(rec, fmt.Sprintf(
-				"SFTP: no se pudo mover a ERROR/ (%s), renombrar (%s) ni borrar (%s)",
-				moveErr, renameErr, delErr,
-			))
-			rec.ProcessedPath = ""
-			return
-		}
-		log.Printf("[processor] DELETE OK file=%q (último fallback tras MOVE y RENAME fallidos)", fileName)
 		appendErrorReason(rec, fmt.Sprintf(
-			"SFTP: MOVE (%s) y RENAME (%s) fallaron, archivo eliminado del origen",
+			"SFTP: no se pudo mover a ERROR/ (%s) ni renombrar (%s); revisar permisos y mover manualmente",
 			moveErr, renameErr,
 		))
 		rec.ProcessedPath = ""
@@ -789,12 +767,11 @@ func (s *Service) processOne(src fileSource, job queuedJob) model.FileProcessRec
 			rec.FileHash = fileHash
 			if s.store.FileHashAlreadyHandled(fileHash) {
 				// Mismo contenido ya notificado antes como "sin producto configurado" (o cualquier
-				// otro terminal). No re-notificamos: silenciamos e intentamos borrar del SFTP para
-				// no dejar el archivo dando vueltas cada scan.
+				// otro terminal). No re-notificamos: silenciamos y dejamos el archivo en la raíz
+				// del SFTP. El próximo scan volverá a detectar el hash y silenciar igual.
 				rec.Status = model.FileStatusSkipped
 				rec.ErrorReason = "archivo omitido: mismo contenido (SHA-256) ya notificado en corrida previa (sin producto configurado)"
 				rec.SuppressPersist = true
-				deleteRemoteFile(src, fileName)
 				s.clearTransientRetry(fileName)
 				return rec
 			}
@@ -845,14 +822,13 @@ func (s *Service) processOne(src fileSource, job queuedJob) model.FileProcessRec
 	if err != nil {
 		if errors.Is(err, errDuplicateFileHash) {
 			// Dedup por hash: el archivo (mismo SHA-256) ya fue manejado en PROCESSED/SKIPPED/ERROR.
-			// No persistimos terminal, no enviamos correo — borramos el archivo en el SFTP para no
-			// dejar copias residuales de contenido que no se va a re-procesar. El worker borra la
-			// fila QUEUED al ver SuppressPersist.
+			// No persistimos terminal, no enviamos correo — dejamos el archivo en la raíz del SFTP.
+			// El worker borra la fila QUEUED al ver SuppressPersist. El próximo scan volverá a detectar
+			// el hash y silenciar igual.
 			rec.Status = model.FileStatusSkipped
 			rec.ErrorReason = "archivo omitido: mismo contenido (SHA-256) ya manejado en corrida previa"
 			rec.FileHash = fileHash
 			rec.ArchivePath = archivePath
-			deleteRemoteFile(src, fileName)
 			rec.ProcessedPath = ""
 			rec.SuppressPersist = true
 			s.clearTransientRetry(fileName)
@@ -913,9 +889,9 @@ func (s *Service) processOne(src fileSource, job queuedJob) model.FileProcessRec
 		// Corto-circuito para re-subidas del mismo contenido: si TODAS las filas que bloquean lo
 		// hacen únicamente por "OP BT DUPLICADO: YA PROCESADO" (créditos ya cargados en una
 		// corrida previa), no es un error nuevo, es el mismo lote llegando otra vez. Silenciamos
-		// (SKIPPED sin correo) y sacamos el archivo del SFTP para que el próximo scan no lo vuelva
-		// a tocar. Sin esto, cada 5 minutos el operador recibía el mismo correo listando "YA
-		// PROCESADO" para cada fila.
+		// (SKIPPED sin correo) y dejamos el archivo en la raíz del SFTP; el próximo scan volverá
+		// a caer aquí y a silenciar igual. Sin este corto-circuito el operador recibía el mismo
+		// correo listando "YA PROCESADO" cada 5 minutos.
 		if policiesAllBlockingAreHistoricalDuplicate(policies) {
 			nDup := countPoliciesBlockingIssues(policies)
 			log.Printf("[processor] re-subida detectada file_id=%s file=%s filas_ya_procesadas=%d — silenciando",
@@ -926,7 +902,6 @@ func (s *Service) processOne(src fileSource, job queuedJob) model.FileProcessRec
 				nDup,
 			)
 			rec.SuppressPersist = true
-			deleteRemoteFile(src, fileName)
 			s.clearTransientRetry(fileName)
 			return rec
 		}
