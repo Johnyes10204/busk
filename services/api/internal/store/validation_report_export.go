@@ -62,10 +62,27 @@ func excelColumnOrderFromRaw(raw map[string]string) []string {
 	return out
 }
 
+// mergeSourceColumns arma la lista de columnas del espejo. Si el archivo trae
+// «_excel_column_order» (encabezados originales), respetamos ese orden y solo
+// añadimos las variantes «<encabezado>__col_N» que el procesador crea para
+// encabezados repetidos; el resto (campos canónicos del mapping como
+// document_number, credit_number, etc.) se omite para que el XLSX sea un
+// espejo exacto del archivo original.
+// Fallback (sin _excel_column_order): mantenemos todas las claves, ordenadas.
 func mergeSourceColumns(preferred []string, allKeys map[string]struct{}) []string {
 	seen := make(map[string]struct{})
-	out := make([]string, 0, len(allKeys))
+	if len(preferred) == 0 {
+		rest := make([]string, 0, len(allKeys))
+		for k := range allKeys {
+			rest = append(rest, k)
+		}
+		sort.Strings(rest)
+		return rest
+	}
+	out := make([]string, 0, len(preferred))
+	preferredSet := make(map[string]struct{}, len(preferred))
 	for _, k := range preferred {
+		preferredSet[k] = struct{}{}
 		if _, ok := allKeys[k]; !ok {
 			continue
 		}
@@ -75,15 +92,41 @@ func mergeSourceColumns(preferred []string, allKeys map[string]struct{}) []strin
 		seen[k] = struct{}{}
 		out = append(out, k)
 	}
-	rest := make([]string, 0)
+	type dupCol struct {
+		base string
+		n    int
+		full string
+	}
+	dups := make([]dupCol, 0)
 	for k := range allKeys {
-		if _, ok := seen[k]; ok {
+		if _, dup := seen[k]; dup {
 			continue
 		}
-		rest = append(rest, k)
+		idx := strings.Index(k, "__col_")
+		if idx <= 0 {
+			continue
+		}
+		base := k[:idx]
+		if _, ok := preferredSet[base]; !ok {
+			continue
+		}
+		nStr := k[idx+len("__col_"):]
+		n, err := strconv.Atoi(nStr)
+		if err != nil {
+			continue
+		}
+		dups = append(dups, dupCol{base, n, k})
 	}
-	sort.Strings(rest)
-	return append(out, rest...)
+	sort.Slice(dups, func(i, j int) bool {
+		if dups[i].base != dups[j].base {
+			return dups[i].base < dups[j].base
+		}
+		return dups[i].n < dups[j].n
+	})
+	for _, d := range dups {
+		out = append(out, d.full)
+	}
+	return out
 }
 
 func collectSourceColumns(inputs []policyRowInput) []string {
@@ -169,19 +212,36 @@ func buildFileMirrorRows(inputs []policyRowInput) (sourceCols []string, rows []F
 	return sourceCols, rows
 }
 
+// displayHeaderFromKey pinta el encabezado del archivo original. Las claves
+// «<nombre>__col_N» (encabezados repetidos en el Excel de origen) se muestran
+// como su nombre base para que dos columnas iguales del archivo original se
+// vean iguales en el espejo. El sufijo __col_N solo vive internamente para
+// resolver el valor correcto en cada fila.
+func displayHeaderFromKey(key string) string {
+	if idx := strings.Index(key, "__col_"); idx > 0 {
+		rest := key[idx+len("__col_"):]
+		if _, err := strconv.Atoi(rest); err == nil {
+			return key[:idx]
+		}
+	}
+	return key
+}
+
 // validationReportEmailMirrorRows: misma estructura que la hoja "Datos archivo" pero con todas las filas afectadas
-// (bloqueantes + informativas + revisión manual).
+// (bloqueantes + informativas + revisión manual). El espejo replica el archivo original tal cual y solo
+// añade las columnas «observaciones» y «novedades» al final; no se anteponen columnas de proceso.
 func validationReportEmailMirrorRows(r FileValidationReport) [][]string {
-	prefix := []string{"fila_excel", "estado_poliza"}
 	suffix := []string{"observaciones", "novedades"}
-	header := append(append(append([]string{}, prefix...), r.EmailSourceColumns...), suffix...)
+	header := make([]string, 0, len(r.EmailSourceColumns)+len(suffix))
+	for _, k := range r.EmailSourceColumns {
+		header = append(header, displayHeaderFromKey(k))
+	}
+	header = append(header, suffix...)
 	out := [][]string{header}
 	for _, ex := range r.EmailExportedRows {
 		row := make([]string, len(header))
-		row[0] = strconv.Itoa(ex.RowNumber)
-		row[1] = etiquetaEstadoPolizaInforme(ex.PolicyStatus)
 		for i, col := range r.EmailSourceColumns {
-			row[2+i] = strings.TrimSpace(ex.Data[col])
+			row[i] = strings.TrimSpace(ex.Data[col])
 		}
 		row[len(header)-2] = ex.Observaciones
 		row[len(header)-1] = ex.Novedades
@@ -190,18 +250,20 @@ func validationReportEmailMirrorRows(r FileValidationReport) [][]string {
 	return out
 }
 
-// validationReportMirrorRows: columnas del archivo (orden del Excel) + fila, estado, observaciones y novedades al final.
+// validationReportMirrorRows: columnas del archivo (orden del Excel) + observaciones y novedades al final.
+// El archivo descargable es un espejo exacto del original con únicamente esas dos columnas añadidas.
 func validationReportMirrorRows(r FileValidationReport) [][]string {
-	prefix := []string{"fila_excel", "estado_poliza"}
 	suffix := []string{"observaciones", "novedades"}
-	header := append(append(append([]string{}, prefix...), r.SourceColumns...), suffix...)
+	header := make([]string, 0, len(r.SourceColumns)+len(suffix))
+	for _, k := range r.SourceColumns {
+		header = append(header, displayHeaderFromKey(k))
+	}
+	header = append(header, suffix...)
 	out := [][]string{header}
 	for _, ex := range r.ExportedRows {
 		row := make([]string, len(header))
-		row[0] = strconv.Itoa(ex.RowNumber)
-		row[1] = etiquetaEstadoPolizaInforme(ex.PolicyStatus)
 		for i, col := range r.SourceColumns {
-			row[2+i] = strings.TrimSpace(ex.Data[col])
+			row[i] = strings.TrimSpace(ex.Data[col])
 		}
 		row[len(header)-2] = ex.Observaciones
 		row[len(header)-1] = ex.Novedades
@@ -229,11 +291,10 @@ func writeValidationReportMirrorSheet(f *excelize.File, sheet string, rows [][]s
 	if ncols == 0 {
 		return nil
 	}
-	_ = f.SetColWidth(sheet, "A", "B", 14)
 	if ncols > 2 {
-		firstData, _ := excelize.ColumnNumberToName(3)
+		firstData, _ := excelize.ColumnNumberToName(1)
 		lastData, _ := excelize.ColumnNumberToName(ncols - 2)
-		if firstData != "" && lastData != "" && ncols > 4 {
+		if firstData != "" && lastData != "" {
 			_ = f.SetColWidth(sheet, firstData, lastData, 18)
 		}
 	}

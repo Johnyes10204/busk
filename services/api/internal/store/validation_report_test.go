@@ -98,23 +98,23 @@ func TestValidationReport_EmailXLSXUnicaHoja(t *testing.T) {
 		t.Fatalf("encabezado + 2 filas (bloqueante e informativa), got %d", len(rows))
 	}
 	header := rows[0]
-	if header[0] != "fila_excel" || header[1] != "estado_poliza" || header[len(header)-2] != "observaciones" || header[len(header)-1] != "novedades" {
+	if header[0] != "IDENTIFICACION" || header[1] != "PRIMA MENSUAL" || header[len(header)-2] != "observaciones" || header[len(header)-1] != "novedades" {
 		t.Fatalf("encabezado inesperado: %v", header)
 	}
-	if rows[1][0] != "3" {
-		t.Fatalf("primera fila debe ser la 3 (bloqueante), got %v", rows[1])
+	if rows[1][0] != "111" {
+		t.Fatalf("primera fila (bloqueante) debe llevar los datos originales, got %v", rows[1])
 	}
 	if !strings.Contains(rows[1][len(rows[1])-1], "prima no válida") {
-		t.Fatalf("novedades fila 3: %q", rows[1][len(rows[1])-1])
+		t.Fatalf("novedades fila bloqueante: %q", rows[1][len(rows[1])-1])
 	}
 	if rows[1][len(rows[1])-2] == "" {
-		t.Fatalf("observaciones fila 3 vacías")
+		t.Fatalf("observaciones fila bloqueante vacías")
 	}
-	if rows[2][0] != "5" {
-		t.Fatalf("segunda fila debe ser la 5 (informativa), got %v", rows[2])
+	if rows[2][0] != "222" {
+		t.Fatalf("segunda fila (informativa) debe llevar los datos originales, got %v", rows[2])
 	}
 	if !strings.Contains(rows[2][len(rows[2])-1], "vencimiento") {
-		t.Fatalf("novedades fila 5: %q", rows[2][len(rows[2])-1])
+		t.Fatalf("novedades fila informativa: %q", rows[2][len(rows[2])-1])
 	}
 }
 
