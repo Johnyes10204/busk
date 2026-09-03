@@ -553,6 +553,17 @@ func (c *Client) MoveToFolder(
 		)
 	}
 
+	// MkdirAll idempotente: si ERROR/ o PROCESSED/ no existen, crearlos antes del Stat.
+	// Sin esto el MOVE fallaba con "destination folder does not exist" y caía al fallback
+	// RenameInPlace, que solo etiqueta el archivo pero lo deja en la raíz del SFTP.
+	if err := c.raw.MkdirAll(dstDir); err != nil {
+		log.Printf(
+			"[sftp] MkdirAll dstDir=%q err=%v — se intenta Stat igualmente",
+			dstDir,
+			err,
+		)
+	}
+
 	dstInfo, err := c.raw.Stat(dstDir)
 	if err != nil {
 		return "", fmt.Errorf(

@@ -190,3 +190,48 @@ func TestValidarPlanMapfre_CancerPlan2Prima13000(t *testing.T) {
 		t.Fatalf("cancer plan 2 prima 13000 + 10M: %v", v)
 	}
 }
+
+// TestValidarPlanMapfre_AccMenPrimaTotalArchivoJunioVF: fila real de
+// «ACC MEN RM-INCLUSION JUNIO 2026 VF»: prima total 374400 ÷ plazo 48 = 7800
+// (Plan 1 base, valor asegurado 5M). Debe pasar sin novedad.
+func TestValidarPlanMapfre_AccMenPrimaTotalArchivoJunioVF(t *testing.T) {
+	values := map[string]string{
+		"plan_name":           "Plan 1",
+		"monthly_premium":     "374400",
+		"initial_term_months": "48",
+		"insured_amount":      "5000000",
+	}
+	if v := validarPlanMapfre("MAPFRE_ACC_MEN", values); len(v) != 0 {
+		t.Fatalf("AP menores 374400/48=7800 debe pasar limpio: %v", v)
+	}
+}
+
+// TestValidarPlanMapfre_CancerPrimaTotalArchivoJunioVF: fila real de
+// «CANCER RM-INCLUSION JUNIO 2026 VF»: prima total 145350 ÷ plazo 18 = 8075
+// (Plan 1 con %, valor asegurado 7M). Debe pasar sin novedad.
+func TestValidarPlanMapfre_CancerPrimaTotalArchivoJunioVF(t *testing.T) {
+	values := map[string]string{
+		"plan_name":           "Plan 1",
+		"monthly_premium":     "145350",
+		"initial_term_months": "18",
+		"insured_amount":      "7000000",
+	}
+	if v := validarPlanMapfre("MAPFRE_CANCER", values); len(v) != 0 {
+		t.Fatalf("Cáncer 145350/18=8075 debe pasar limpio: %v", v)
+	}
+}
+
+// TestValidarPlanMapfre_VidaPrimaTotalArchivoJunioVF: fila real de
+// «VOL RM-INCLUSION JUNIO 2026 VF»: prima total 206400 ÷ plazo 24 = 8600
+// (Plan 1, valor asegurado 5M). Debe pasar sin novedad.
+func TestValidarPlanMapfre_VidaPrimaTotalArchivoJunioVF(t *testing.T) {
+	values := map[string]string{
+		"plan_name":           "Plan 1",
+		"monthly_premium":     "206400",
+		"initial_term_months": "24",
+		"insured_amount":      "5000000",
+	}
+	if v := validarPlanMapfre("MAPFRE_VIDA", values); len(v) != 0 {
+		t.Fatalf("Vida 206400/24=8600 debe pasar limpio: %v", v)
+	}
+}

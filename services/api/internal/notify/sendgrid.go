@@ -187,11 +187,7 @@ func (n *sendGridNotifier) notifyProcessedSuccess(input FileEmailInput) error {
 
 	send := func(atts []emailAttachment) (statusCode int, body string, err error) {
 		msg := n.composeSuccessMail(input, atts, hasNovedades, reportURL)
-		r, e := client.Send(msg)
-		if e != nil {
-			return 0, "", e
-		}
-		return r.StatusCode, r.Body, nil
+		return sendWithBackoff(client, msg, input.FileID)
 	}
 
 	trySend := func(atts []emailAttachment) (ok bool, status int, body string, err error) {
@@ -297,11 +293,7 @@ func (n *sendGridNotifier) notifyProcessingError(input FileEmailInput) error {
 
 	send := func(attachments []emailAttachment, kind errorAttachmentKind) (statusCode int, body string, err error) {
 		msg := n.composeErrorMail(input, attachments, kind, downloadURL)
-		r, e := client.Send(msg)
-		if e != nil {
-			return 0, "", e
-		}
-		return r.StatusCode, r.Body, nil
+		return sendWithBackoff(client, msg, input.FileID)
 	}
 
 	trySend := func(attachments []emailAttachment, kind errorAttachmentKind, label string) (ok bool, status int, body string, err error) {
@@ -489,6 +481,63 @@ func truncateForLog(s string, max int) string {
 		return s
 	}
 	return s[:max] + "…"
+}
+
+// sendBackoffs define la escalera de espera entre reintentos ante errores transitorios
+// de SendGrid (fallo de red o status 5xx). Cuatro intentos totales: 1 original + 3
+// reintentos separados por 1s, 4s y 15s. 4xx no se reintenta — un cambio de estrategia
+// (menos adjunto, ZIP, etc.) es lo que puede salvar esos casos.
+var sendBackoffs = []time.Duration{
+	1 * time.Second,
+	4 * time.Second,
+	15 * time.Second,
+}
+
+// sendWithBackoff envuelve client.Send con reintentos ante fallos transitorios. Si
+// SendGrid responde 2xx, retorna de inmediato. Si retorna 4xx, también corta porque
+// el problema es del payload y el caller ya sabe cómo hacer fallback de estrategia.
+// Solo error de red o 5xx entran al backoff. En el peor caso agrega ~20s de espera
+// por Send antes de rendirse; con 2 workers, es un costo aceptable frente a perder
+// la notificación por un blip de SendGrid.
+func sendWithBackoff(client *sendgrid.Client, msg *sgmail.SGMailV3, fileID string) (int, string, error) {
+	totalIntentos := len(sendBackoffs) + 1
+	var lastStatus int
+	var lastBody string
+	var lastErr error
+	for attempt := 0; attempt < totalIntentos; attempt++ {
+		r, err := client.Send(msg)
+		if err != nil {
+			lastErr = err
+			lastStatus = 0
+			lastBody = ""
+			log.Printf("[notify] sendgrid intento=%d/%d file_id=%s err=%v (red/transitorio)",
+				attempt+1, totalIntentos, fileID, err)
+		} else {
+			lastStatus = r.StatusCode
+			lastBody = r.Body
+			lastErr = nil
+			if r.StatusCode >= 200 && r.StatusCode < 300 {
+				if attempt > 0 {
+					log.Printf("[notify] sendgrid OK tras reintento file_id=%s intentos=%d status=%d",
+						fileID, attempt+1, r.StatusCode)
+				}
+				return r.StatusCode, r.Body, nil
+			}
+			if r.StatusCode < 500 {
+				// 4xx: no reintentar; delegar el fallback de estrategia al caller.
+				return r.StatusCode, r.Body, nil
+			}
+			log.Printf("[notify] sendgrid intento=%d/%d file_id=%s status=%d body=%s (5xx transitorio)",
+				attempt+1, totalIntentos, fileID, r.StatusCode, truncateForLog(r.Body, 400))
+		}
+		if attempt < len(sendBackoffs) {
+			time.Sleep(sendBackoffs[attempt])
+		}
+	}
+	if lastErr != nil {
+		return 0, "", fmt.Errorf("sendgrid tras %d intentos: %w", totalIntentos, lastErr)
+	}
+	return lastStatus, lastBody, nil
 }
 
 func (n *sendGridNotifier) composeErrorMail(input FileEmailInput, attachments []emailAttachment, kind errorAttachmentKind, downloadURL string) *sgmail.SGMailV3 {

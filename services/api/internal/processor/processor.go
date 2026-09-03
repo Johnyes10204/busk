@@ -176,6 +176,10 @@ func (s *Service) runJob(workerID int, job queuedJob) {
 		if err := s.store.DeleteFileRecord(job.ID); err != nil {
 			log.Printf("[processor] worker_%d no se pudo borrar QUEUED de duplicado file_id=%s err=%v", workerID, job.ID, err)
 		}
+		// La copia local en FILES_ARCHIVE_DIR/REPORTS_ARCHIVE_DIR es una re-descarga
+		// redundante del mismo contenido que ya se notificó en la corrida previa: no
+		// hace falta conservarla.
+		cleanupTerminalArtifacts(rec)
 		terminalWritten = true
 		s.updateProgress(job.ID, job.FileName, string(rec.Status), 100, "duplicado (omitido sin registrar)", rec.ProductID, rec.ErrorReason)
 		log.Printf("[processor] worker_%d duplicado suprimido file_id=%s file=%s hash=%s", workerID, job.ID, job.FileName, rec.FileHash)
@@ -189,17 +193,23 @@ func (s *Service) runJob(workerID int, job queuedJob) {
 		log.Printf("[processor] worker_%d FinalizeFileStatus falló file_id=%s err=%v", workerID, job.ID, err)
 	}
 	terminalWritten = true
-	s.notifyFileProcessing(rec)
+	notifyErr := s.notifyFileProcessing(rec)
+	// Solo borramos del disco cuando el archivo terminó en ERROR y el correo se envió con
+	// éxito — así el operador siempre recibe el adjunto y no queda una copia huérfana en
+	// disco. PROCESSED conserva la copia porque la UI la descarga desde /files/download.
+	if notifyErr == nil && rec.Status == model.FileStatusError {
+		cleanupTerminalArtifacts(rec)
+	}
 	finalErr := rec.ErrorReason
 	s.updateProgress(job.ID, job.FileName, string(rec.Status), 100, "finalizado", rec.ProductID, finalErr)
 	log.Printf("[processor] worker_%d finalizó file_id=%s status=%s", workerID, job.ID, rec.Status)
 }
 
-func (s *Service) notifyFileProcessing(rec model.FileProcessRecord) {
+func (s *Service) notifyFileProcessing(rec model.FileProcessRecord) error {
 	// Invariante: todo archivo que llegó a estado terminal debe generar un correo con adjunto.
 	// PROCESSED/ERROR/SKIPPED reciben notificación; PENDING/QUEUED/PROCESSING nunca llegan aquí.
 	if rec.Status != model.FileStatusProcessed && rec.Status != model.FileStatusError && rec.Status != model.FileStatusSkipped {
-		return
+		return nil
 	}
 	err := s.notifier.NotifyFileProcessing(notify.FileEmailInput{
 		FileID:               rec.ID,
@@ -217,7 +227,12 @@ func (s *Service) notifyFileProcessing(rec model.FileProcessRecord) {
 		if setErr := s.store.SetFileEmailError(rec.ID, err.Error()); setErr != nil {
 			log.Printf("[notify] no se pudo guardar email_error file_id=%s err=%v", rec.ID, setErr)
 		}
-		return
+		return err
+	}
+	// email_error a NULL como marca de "correo OK": la columna es la fuente de verdad
+	// que la API expone, no dependemos solo de que el operador lea el log.
+	if setErr := s.store.SetFileEmailError(rec.ID, ""); setErr != nil {
+		log.Printf("[notify] no se pudo limpiar email_error tras éxito file_id=%s err=%v", rec.ID, setErr)
 	}
 	switch rec.Status {
 	case model.FileStatusProcessed:
@@ -226,6 +241,29 @@ func (s *Service) notifyFileProcessing(rec model.FileProcessRecord) {
 		log.Printf("[notify] correo de error enviado file_id=%s", rec.ID)
 	case model.FileStatusSkipped:
 		log.Printf("[notify] correo de omisión enviado file_id=%s", rec.ID)
+	}
+	return nil
+}
+
+// cleanupTerminalArtifacts borra las copias locales en disco (original + reporte XLSX)
+// que se guardan en FILES_ARCHIVE_DIR y REPORTS_ARCHIVE_DIR. Se invoca cuando el archivo
+// termina en ERROR (tras enviar correo con éxito) o SKIPPED (siempre, son re-descargas
+// redundantes de contenido ya notificado). No aplica a PROCESSED porque la UI usa
+// /api/v1/files/download para servir el original desde disco.
+func cleanupTerminalArtifacts(rec model.FileProcessRecord) {
+	if p := strings.TrimSpace(rec.ArchivePath); p != "" {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			log.Printf("[processor] cleanup archive_path file_id=%s path=%q err=%v", rec.ID, p, err)
+		} else {
+			log.Printf("[processor] cleanup archive_path OK file_id=%s path=%q", rec.ID, p)
+		}
+	}
+	if p := strings.TrimSpace(rec.ReportArchivePath); p != "" {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			log.Printf("[processor] cleanup report_archive_path file_id=%s path=%q err=%v", rec.ID, p, err)
+		} else {
+			log.Printf("[processor] cleanup report_archive_path OK file_id=%s path=%q", rec.ID, p)
+		}
 	}
 }
 
