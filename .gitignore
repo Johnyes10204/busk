@@ -19,3 +19,8 @@ build/
 
 # Dependencies
 node_modules/
+
+# Runtime data (archivos y reportes generados por el procesador en tiempo real).
+# NUNCA commitear: pertenecen al usuario que corre el servicio y rompen el pull
+# en el servidor por permisos de directorio.
+services/api/data/
