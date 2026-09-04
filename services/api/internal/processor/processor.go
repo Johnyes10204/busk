@@ -1502,7 +1502,7 @@ func (s *Service) buildRuleRuntimeConfig(p model.Product) ruleRuntimeConfig {
 		BolivarDueReferenceMonthOffset: -1,
 		BolivarValidateDueMonth:        true,
 		MapfreRequireCurrentMonth:      true,
-		MapfreDateToleranceDays:        2,
+		MapfreDateToleranceDays:        10,
 	}
 	if v, ok := s.store.GetGlobalRuleParam("date_layouts_csv"); ok {
 		layouts := splitCSV(v)
@@ -2105,9 +2105,41 @@ func mesAnteriorAlCargue(now time.Time) (int, time.Month) {
 	return prev.Year(), prev.Month()
 }
 
+// addMonthsClamped suma N meses respetando la semántica de negocio "fin de mes": si
+// el día de origen no existe en el mes destino, se ajusta al último día de ese mes.
+// Esto difiere de time.AddDate de Go, que hace overflow al mes siguiente (ej. 31 ago
+// + 6 meses = 31 feb → 3 mar en año no bisiesto). Cliente considera "31 ago + 6 m
+// = 28 feb" el resultado correcto porque cierra en meses, no en días.
+func addMonthsClamped(t time.Time, months int) time.Time {
+	year := t.Year()
+	month := int(t.Month()) + months
+	for month > 12 {
+		year++
+		month -= 12
+	}
+	for month < 1 {
+		year--
+		month += 12
+	}
+	lastDay := time.Date(year, time.Month(month)+1, 0, 0, 0, 0, 0, t.Location()).Day()
+	day := t.Day()
+	if day > lastDay {
+		day = lastDay
+	}
+	return time.Date(year, time.Month(month), day, t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location())
+}
+
 // mapfreFinVigenciaPlazoCoherente valida inicio+plazo vs fin de vigencia (no calcula edad).
 // Si no hay plazo o las fechas no se interpretan (diff 0), se omite la regla: la fila sigue
 // como válida (p. ej. fin de vigencia ajustado por cancelación en otro archivo/momento).
+//
+// Acepta DOS interpretaciones para la suma de meses:
+//  1) Clamping fin-de-mes (semántica de negocio: "31 ago + 6 m = 28 feb")
+//  2) Overflow de time.AddDate (semántica de Go: "31 ago + 6 m = 3 mar")
+//
+// Si CUALQUIERA de las dos cae dentro de la tolerancia, la fila pasa. Sin esta doble
+// lectura, la única aceptada era la (2) y cierres al último día del mes generaban
+// falsos positivos ("REVISAR FIN VIGENCIA: DIFERENCIA 3 DÍAS") en cargas legítimas.
 func mapfreFinVigenciaPlazoCoherente(startRaw, termRaw, endRaw string, layouts []string, tolerance int) (diffDays int, ok bool) {
 	term, _ := parseFlexibleNumber(termRaw)
 	if term <= 0 {
@@ -2119,12 +2151,22 @@ func mapfreFinVigenciaPlazoCoherente(startRaw, termRaw, endRaw string, layouts [
 	end := parseDateField(endRaw, layouts, dateYearContextVigencia)
 	if !start.IsZero() && !end.IsZero() {
 		hadPair = true
-		expected := start.AddDate(0, int(term), 0)
-		diff := int(end.Sub(expected).Hours() / 24)
-		if diff >= -tolerance && diff <= tolerance {
-			return diff, true
+		expectedClamped := addMonthsClamped(start, int(term))
+		expectedOverflow := start.AddDate(0, int(term), 0)
+		diffClamped := int(end.Sub(expectedClamped).Hours() / 24)
+		diffOverflow := int(end.Sub(expectedOverflow).Hours() / 24)
+		// Se prueba primero clamped (semántica del cliente); si no pasa, overflow.
+		if diffClamped >= -tolerance && diffClamped <= tolerance {
+			return diffClamped, true
 		}
-		bestDiff = diff
+		if diffOverflow >= -tolerance && diffOverflow <= tolerance {
+			return diffOverflow, true
+		}
+		// Ninguna cae: reporta la más chica en magnitud para el mensaje al usuario.
+		bestDiff = diffClamped
+		if absInt(diffOverflow) < absInt(diffClamped) {
+			bestDiff = diffOverflow
+		}
 	}
 	if !hadPair {
 		return 0, true

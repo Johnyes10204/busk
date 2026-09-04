@@ -179,6 +179,73 @@ func TestMapfreFinVigenciaPlazoCoherente_SoloDiaMesAnio(t *testing.T) {
 	}
 }
 
+// TestMapfreFinVigenciaPlazoCoherente_ClampingFinDeMes: caso reportado por el cliente
+// en «VOL RM-INCLUSION_AGOSTO.xlsx» — pólizas emitidas el 31-ago-2026 con plazo 6 meses
+// cierran el 28-feb-2027 (último día de febrero en año no bisiesto). Con la regla vieja
+// (Go time.AddDate hacía overflow: 31-ago+6m=3-mar-2027) fallaba con "REVISAR FIN
+// VIGENCIA: DIFERENCIA 3 DÍAS". Con clamping fin-de-mes ahora pasa limpio.
+func TestMapfreFinVigenciaPlazoCoherente_ClampingFinDeMes(t *testing.T) {
+	layouts := defaultDateLayouts()
+	cases := []struct {
+		name  string
+		start string
+		term  string
+		end   string
+	}{
+		{"31 ago 2026 + 6 m = 28 feb 2027 (feb no bisiesto)", "31/08/2026", "6", "28/02/2027"},
+		{"31 ene 2026 + 1 m = 28 feb 2026", "31/01/2026", "1", "28/02/2026"},
+		{"31 ene 2028 + 1 m = 29 feb 2028 (año bisiesto)", "31/01/2028", "1", "29/02/2028"},
+		{"31 mar 2026 + 1 m = 30 abr 2026", "31/03/2026", "1", "30/04/2026"},
+		{"31 may 2026 + 1 m = 30 jun 2026", "31/05/2026", "1", "30/06/2026"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			diff, ok := mapfreFinVigenciaPlazoCoherente(tc.start, tc.term, tc.end, layouts, 10)
+			if !ok {
+				t.Fatalf("debe aceptar (clamping): diff=%d", diff)
+			}
+		})
+	}
+}
+
+// TestMapfreFinVigenciaPlazoCoherente_AceptaOverflowTambien: si un archivo tiene el
+// fin de vigencia calculado con overflow de Go (ej. 3-mar en vez de 28-feb) también
+// debe pasar — no regresionamos archivos existentes que usan esa interpretación.
+func TestMapfreFinVigenciaPlazoCoherente_AceptaOverflowTambien(t *testing.T) {
+	layouts := defaultDateLayouts()
+	// 31 ago 2026 + 6 m con Go = 31 feb 2027 → 3 mar 2027. Debe seguir pasando.
+	if diff, ok := mapfreFinVigenciaPlazoCoherente("31/08/2026", "6", "03/03/2027", layouts, 10); !ok {
+		t.Fatalf("debe aceptar overflow Go (compat hacia atrás): diff=%d", diff)
+	}
+}
+
+// TestAddMonthsClamped: prueba directa del helper con casos de fin de mes.
+func TestAddMonthsClamped(t *testing.T) {
+	base := func(y int, m time.Month, d int) time.Time {
+		return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+	}
+	cases := []struct {
+		name   string
+		start  time.Time
+		months int
+		want   time.Time
+	}{
+		{"31 ago 2026 + 6 = 28 feb 2027", base(2026, time.August, 31), 6, base(2027, time.February, 28)},
+		{"31 ene 2028 + 1 = 29 feb 2028 (bisiesto)", base(2028, time.January, 31), 1, base(2028, time.February, 29)},
+		{"15 abr 2026 + 12 = 15 abr 2027 (día válido, no clampa)", base(2026, time.April, 15), 12, base(2027, time.April, 15)},
+		{"31 dic 2026 + 2 = 28 feb 2027", base(2026, time.December, 31), 2, base(2027, time.February, 28)},
+		{"31 may 2026 + 25 = 30 jun 2028 (2 años + 1 mes)", base(2026, time.May, 31), 25, base(2028, time.June, 30)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := addMonthsClamped(tc.start, tc.months)
+			if !got.Equal(tc.want) {
+				t.Fatalf("addMonthsClamped: got %v want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestMesAnteriorAlCargue(t *testing.T) {
 	cases := []struct {
 		now       time.Time
