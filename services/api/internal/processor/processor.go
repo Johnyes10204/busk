@@ -714,32 +714,6 @@ func policyRowHasBlockingIssues(p *model.PolicyRecord) bool {
 	return false
 }
 
-// policyRowBlockingIsOnlyHistoricalDuplicate devuelve true cuando la fila bloquea SOLO por
-// "OP BT DUPLICADO: YA PROCESADO" (crédito ya cargado en una corrida previa) y no por ningún
-// otro motivo. No cuenta MANUAL_REVIEW ni otras incidencias — cualquier otra causa de bloqueo
-// devuelve false.
-func policyRowBlockingIsOnlyHistoricalDuplicate(p *model.PolicyRecord) bool {
-	if strings.EqualFold(strings.TrimSpace(p.PolicyStatus), "MANUAL_REVIEW") {
-		return false
-	}
-	var notes []string
-	if strings.TrimSpace(p.ValidationJSON) != "" {
-		_ = json.Unmarshal([]byte(p.ValidationJSON), &notes)
-	}
-	dupTag := mensajeCreditoDuplicadoHistorico()
-	blockingCount := 0
-	for _, n := range notes {
-		if !noteIsBlocking(n) {
-			continue
-		}
-		if !strings.Contains(n, dupTag) {
-			return false
-		}
-		blockingCount++
-	}
-	return blockingCount > 0
-}
-
 func policiesRowSetHasBlockingIssues(policies []model.PolicyRecord) bool {
 	for i := range policies {
 		if policyRowHasBlockingIssues(&policies[i]) {
@@ -747,25 +721,6 @@ func policiesRowSetHasBlockingIssues(policies []model.PolicyRecord) bool {
 		}
 	}
 	return false
-}
-
-// policiesAllBlockingAreHistoricalDuplicate devuelve true SOLO si el archivo es una re-subida
-// pura: todas las filas bloquean, y todas lo hacen únicamente por "OP BT DUPLICADO: YA
-// PROCESADO". Si aparece aunque sea una fila sin bloqueo (contenido nuevo que quedaría sin
-// cargar por el file-level gate) o con otra incidencia real (edad, prima, etc.), devolvemos
-// false para que se notifique como ERROR normal — el operador tiene que enterarse.
-func policiesAllBlockingAreHistoricalDuplicate(policies []model.PolicyRecord) bool {
-	hasBlocking := false
-	for i := range policies {
-		if !policyRowHasBlockingIssues(&policies[i]) {
-			return false
-		}
-		hasBlocking = true
-		if !policyRowBlockingIsOnlyHistoricalDuplicate(&policies[i]) {
-			return false
-		}
-	}
-	return hasBlocking
 }
 
 func countPoliciesBlockingIssues(policies []model.PolicyRecord) int {
@@ -924,25 +879,6 @@ func (s *Service) processOne(src fileSource, job queuedJob) model.FileProcessRec
 	rec.ValidationReportJSON = ""
 
 	if policiesRowSetHasBlockingIssues(policies) {
-		// Corto-circuito para re-subidas del mismo contenido: si TODAS las filas que bloquean lo
-		// hacen únicamente por "OP BT DUPLICADO: YA PROCESADO" (créditos ya cargados en una
-		// corrida previa), no es un error nuevo, es el mismo lote llegando otra vez. Silenciamos
-		// (SKIPPED sin correo) y dejamos el archivo en la raíz del SFTP; el próximo scan volverá
-		// a caer aquí y a silenciar igual. Sin este corto-circuito el operador recibía el mismo
-		// correo listando "YA PROCESADO" cada 5 minutos.
-		if policiesAllBlockingAreHistoricalDuplicate(policies) {
-			nDup := countPoliciesBlockingIssues(policies)
-			log.Printf("[processor] re-subida detectada file_id=%s file=%s filas_ya_procesadas=%d — silenciando",
-				rec.ID, fileName, nDup)
-			rec.Status = model.FileStatusSkipped
-			rec.ErrorReason = fmt.Sprintf(
-				"archivo omitido: %d filas ya fueron procesadas en carga previa (re-subida del mismo contenido)",
-				nDup,
-			)
-			rec.SuppressPersist = true
-			s.clearTransientRetry(fileName)
-			return rec
-		}
 		nIssue := countPoliciesBlockingIssues(policies)
 		summary := fmt.Sprintf(
 			"carga omitida: %d filas con incidencias; ninguna póliza persistida (informe en validation_report)",
@@ -1183,7 +1119,10 @@ func validateFile(r io.Reader, fileID, fileName string, candidates []model.Produ
 	}
 	frozenCount := 0
 	cancelledZeroPremiumCount := 0
+	skippedHistoricalDupCount := 0
 	readFullFileOnRowErrors := processorReadFullFileOnRowErrorsFromEnv()
+	upperProductCode := strings.ToUpper(strings.TrimSpace(p.Code))
+	codeAsProductID := codeToProductID(upperProductCode)
 	// Por cada fila de datos: (1) todas las reglas declaradas del producto/formato en p.Rules
 	// vía runRules; (2) reglas de negocio por aseguradora y parámetros de BD vía applyDiagramRules.
 	for i := p.HeaderRow; i < len(rows); i++ {
@@ -1230,6 +1169,19 @@ func validateFile(r io.Reader, fileID, fileName string, candidates []model.Produ
 		}
 		values["_file_name"] = fileName
 		values["product_id"] = p.ID
+		// Skip silencioso: si el credit_number ya está cargado en BD (corrida previa),
+		// ignoramos la fila por completo — no se inserta, no aparece en el informe de
+		// novedades y no bloquea al resto del archivo. Solo aplica cuando hay credit_number;
+		// las filas sin crédito siguen el flujo normal.
+		if svc != nil && svc.store != nil {
+			if credit := strings.TrimSpace(values["credit_number"]); credit != "" {
+				if svc.store.PolicyCreditExists(p.ID, credit) ||
+					(codeAsProductID != "" && codeAsProductID != p.ID && svc.store.PolicyCreditExists(codeAsProductID, credit)) {
+					skippedHistoricalDupCount++
+					continue
+				}
+			}
+		}
 		frozen, ruleViolations := runRules(values, p.Rules)
 		if !frozen && productFreezesOnZeroPremium(p.Code, p.Rules) {
 			if prem, _ := parseFlexibleNumber(values["monthly_premium"]); prem == 0 {
@@ -1309,6 +1261,9 @@ func validateFile(r io.Reader, fileID, fileName string, candidates []model.Produ
 	}
 	if cancelledZeroPremiumCount > 0 {
 		log.Printf("[processor] archivo=%s filas_canceladas_prima_0_sin_politica_freeze=%d", fileName, cancelledZeroPremiumCount)
+	}
+	if skippedHistoricalDupCount > 0 {
+		log.Printf("[processor] archivo=%s filas_omitidas_credito_ya_en_bd=%d", fileName, skippedHistoricalDupCount)
 	}
 	return policies, fileHash, archivePath, p.ID, nil
 }
@@ -1923,7 +1878,9 @@ func applyDiagramRules(
 		}
 	}
 
-	// OP BT / crédito duplicado intra-lote e histórico.
+	// OP BT / crédito duplicado intra-lote. La verificación contra créditos ya cargados en
+	// corridas previas se hace en el loop principal (skip silencioso): no la emitimos como
+	// violación bloqueante.
 	credit := strings.TrimSpace(values["credit_number"])
 	if credit != "" {
 		key := code + "::" + credit
@@ -1937,10 +1894,6 @@ func applyDiagramRules(
 			))
 		} else {
 			seenCredits[key] = struct{}{}
-			if svc != nil && svc.store != nil &&
-				(svc.store.PolicyCreditExists(values["product_id"], credit) || svc.store.PolicyCreditExists(codeToProductID(code), credit)) {
-				hardViolations = append(hardViolations, mensajeCreditoDuplicadoHistorico())
-			}
 		}
 	}
 

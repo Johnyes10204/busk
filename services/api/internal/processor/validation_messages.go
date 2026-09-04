@@ -305,10 +305,6 @@ func mensajeCreditoDuplicadoEnArchivo(credit string, repeats int, filas string) 
 	return fmt.Sprintf("OP BT DUPLICADO EN ARCHIVO: OP BT %s APARECE %d VECES (FILAS %s)", credit, repeats, filas)
 }
 
-func mensajeCreditoDuplicadoHistorico() string {
-	return "OP BT DUPLICADO: YA PROCESADO"
-}
-
 func mensajeCreditoDuplicadoEnArchivoPorFila(credit, filas string) string {
 	return fmt.Sprintf("OP BT DUPLICADO EN ARCHIVO: OP BT %s (FILAS %s)", credit, filas)
 }
