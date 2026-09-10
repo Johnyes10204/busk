@@ -6,15 +6,18 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/buskseguros-design/services/api/internal/model"
 	"github.com/buskseguros-design/services/api/internal/validationnotes"
 	"github.com/xuri/excelize/v2"
 )
 
 const frozenInformativeNote = "La prima mensual es cero; la póliza se registra como congelada (no bloquea la carga del archivo)."
+const historicalDupInformativeNote = "Fila omitida: el crédito ya estaba cargado en una corrida previa; no se reinserta en policies."
 
 const (
-	observacionSinNovedad      = "Sin novedad"
-	observacionPolizaCancelada = "Póliza cancelada"
+	observacionSinNovedad         = "Sin novedad"
+	observacionPolizaCancelada    = "Póliza cancelada"
+	observacionOmitidaHistorica   = "Fila omitida (informativa): crédito ya cargado en corrida previa"
 )
 
 // FileExportedRow replica una fila del archivo procesada más observaciones resumidas y novedades.
@@ -171,6 +174,25 @@ func buildFileMirrorRows(inputs []policyRowInput) (sourceCols []string, rows []F
 				Data:          raw,
 				Observaciones: observacionPolizaCancelada,
 				Novedades:     "",
+			})
+			continue
+		}
+
+		if strings.EqualFold(st, model.PolicyStatusSkippedHistoricalDup) {
+			// La fila llegó en el archivo pero su crédito ya estaba en policies. Se muestra
+			// en el mirror para auditoría con observación informativa y las novedades vienen
+			// del propio validation_json (por defecto historicalDupInformativeNote).
+			notes := trimNotesPreserveAll(policyRowNotes(in))
+			novedades := formatNovedadesColumn(notes)
+			if strings.TrimSpace(novedades) == "" {
+				novedades = historicalDupInformativeNote
+			}
+			rows = append(rows, FileExportedRow{
+				RowNumber:     in.RowNumber,
+				PolicyStatus:  st,
+				Data:          raw,
+				Observaciones: observacionOmitidaHistorica,
+				Novedades:     novedades,
 			})
 			continue
 		}

@@ -73,6 +73,11 @@ type FileProcessRecord struct {
 	SuppressPersist bool `json:"-"`
 }
 
+// PolicyStatusSkippedHistoricalDup marca filas cuyo credit_number ya estaba en policies
+// desde una corrida previa. Nunca se persiste: se usa en memoria para que el reporte de
+// auditoría (XLSX espejo) refleje que la fila llegó en el archivo aunque no la reinsertemos.
+const PolicyStatusSkippedHistoricalDup = "SKIPPED_HISTORICAL_DUP"
+
 type PolicyRecord struct {
 	FileID         string    `json:"file_id"`
 	ProductID      string    `json:"product_id"`
@@ -80,8 +85,12 @@ type PolicyRecord struct {
 	RowNumber      int       `json:"row_number"`
 	DocumentNumber string    `json:"document_number,omitempty"`
 	CreditNumber   string    `json:"credit_number,omitempty"`
-	PolicyStatus   string    `json:"policy_status"` // ACTIVE | FROZEN | MANUAL_REVIEW | CANCELLED
+	PolicyStatus   string    `json:"policy_status"` // ACTIVE | FROZEN | MANUAL_REVIEW | CANCELLED | SKIPPED_HISTORICAL_DUP
 	RawDataJSON    string    `json:"raw_data_json"`
 	ValidationJSON string    `json:"validation_json,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
+	// SkipInsert es transitorio (json:"-") y no se persiste. Cuando true, InsertPolicies
+	// omite la fila: se usa para arrastrar en memoria las filas históricamente duplicadas
+	// que deben aparecer en el XLSX espejo pero no reinsertarse en policies.
+	SkipInsert bool `json:"-"`
 }

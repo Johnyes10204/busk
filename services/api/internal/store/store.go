@@ -407,6 +407,11 @@ func (s *Store) InsertPolicies(policies []model.PolicyRecord) error {
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	for _, p := range policies {
+		// Filas con SkipInsert=true viven solo en memoria para alimentar el reporte de
+		// auditoría (p. ej. créditos ya cargados en corrida previa). No se persisten.
+		if p.SkipInsert {
+			continue
+		}
 		if _, err = tx.Exec(
 			q,
 			p.FileID,
@@ -918,6 +923,19 @@ func completeFileValidationReport(
 		if strings.EqualFold(st, "CANCELLED") {
 			continue
 		}
+		// SKIPPED_HISTORICAL_DUP: la fila vino en el archivo pero su crédito ya estaba en
+		// policies desde una corrida previa. No se reinserta, pero sí queremos que quede
+		// visible en el reporte informativo — el mirror la pinta con observación específica.
+		if strings.EqualFold(st, model.PolicyStatusSkippedHistoricalDup) {
+			informative = append(informative, FilePendingValidation{
+				RowNumber:      in.RowNumber,
+				DocumentNumber: doc,
+				CreditNumber:   cred,
+				PolicyStatus:   st,
+				Notes:          notes,
+			})
+			continue
+		}
 		blocking, info := validationnotes.Split(notes)
 		if strings.EqualFold(st, "FROZEN") && len(info) == 0 && len(blocking) == 0 {
 			info = []string{validationnotes.Informativo("PRIMA CERO: PÓLIZA CONGELADA")}
@@ -1194,6 +1212,8 @@ func etiquetaEstadoPolizaInforme(status string) string {
 		return "Revisión manual"
 	case "CANCELLED":
 		return "Cancelada"
+	case model.PolicyStatusSkippedHistoricalDup:
+		return "Omitida (crédito ya cargado)"
 	default:
 		return strings.TrimSpace(status)
 	}

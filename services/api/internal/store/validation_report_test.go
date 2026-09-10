@@ -236,6 +236,87 @@ func TestValidationReport_MirrorIncluyeTodasLasFilas(t *testing.T) {
 	}
 }
 
+func TestValidationReport_MirrorIncluyeFilasDuplicadoHistorico(t *testing.T) {
+	// Regresión: cuando todas las filas del archivo son duplicados históricos, el mirror
+	// no debe quedar en solo encabezado. Cada fila SKIPPED_HISTORICAL_DUP se pinta con
+	// observación informativa y las columnas del archivo original quedan preservadas.
+	colOrder, _ := json.Marshal([]string{"NUMERO_CREDITO", "IDENTIFICACION"})
+	rawA, _ := json.Marshal(map[string]string{
+		"_excel_column_order": string(colOrder),
+		"NUMERO_CREDITO":      "OP-1",
+		"IDENTIFICACION":      "111",
+	})
+	rawB, _ := json.Marshal(map[string]string{
+		"_excel_column_order": string(colOrder),
+		"NUMERO_CREDITO":      "OP-2",
+		"IDENTIFICACION":      "222",
+	})
+	policies := []model.PolicyRecord{
+		{
+			RowNumber:      5,
+			CreditNumber:   "OP-1",
+			DocumentNumber: "111",
+			PolicyStatus:   model.PolicyStatusSkippedHistoricalDup,
+			ValidationJSON: `["` + validationnotes.Informativo("crédito ya cargado en corrida previa; fila omitida sin reinsertar") + `"]`,
+			RawDataJSON:    string(rawA),
+			SkipInsert:     true,
+		},
+		{
+			RowNumber:      6,
+			CreditNumber:   "OP-2",
+			DocumentNumber: "222",
+			PolicyStatus:   model.PolicyStatusSkippedHistoricalDup,
+			ValidationJSON: `["` + validationnotes.Informativo("crédito ya cargado en corrida previa; fila omitida sin reinsertar") + `"]`,
+			RawDataJSON:    string(rawB),
+			SkipInsert:     true,
+		},
+	}
+	report := BuildFileValidationReportFromPolicies("f1", "MICRO_ESAL_AGOSTO.xlsx", "bolivar_inclusion_deudores_esal_micro", "PROCESSED", "", "", policies)
+	if len(report.ExportedRows) != 2 {
+		t.Fatalf("espejo debe incluir las 2 filas SKIPPED: got=%d", len(report.ExportedRows))
+	}
+	if got := report.TotalInformativeValidations; got != 2 {
+		t.Fatalf("informativos debe contar las 2 filas SKIPPED: got=%d", got)
+	}
+	if got := report.TotalPendingValidations; got != 0 {
+		t.Fatalf("pendings no debe contarlas: got=%d", got)
+	}
+	for _, ex := range report.ExportedRows {
+		if ex.Observaciones == "" || !strings.Contains(strings.ToLower(ex.Observaciones), "omitida") {
+			t.Fatalf("observación esperada 'omitida ...', got=%q (fila %d)", ex.Observaciones, ex.RowNumber)
+		}
+		if ex.Novedades == "" {
+			t.Fatalf("fila SKIPPED debe tener novedad informativa (fila %d)", ex.RowNumber)
+		}
+		if ex.Data["NUMERO_CREDITO"] == "" {
+			t.Fatalf("fila SKIPPED debe conservar columnas del archivo original (fila %d)", ex.RowNumber)
+		}
+	}
+
+	xlsx, err := ValidationReportClientXLSX(report)
+	if err != nil {
+		t.Fatalf("XLSX: %v", err)
+	}
+	if len(xlsx) == 0 {
+		t.Fatalf("XLSX vacío")
+	}
+	f, err := excelize.OpenReader(bytes.NewReader(xlsx))
+	if err != nil {
+		t.Fatalf("open xlsx: %v", err)
+	}
+	defer f.Close()
+	rows, err := f.GetRows("Datos archivo")
+	if err != nil {
+		t.Fatalf("get rows: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("XLSX espejo debe tener 1 header + 2 filas: got=%d", len(rows))
+	}
+	if rows[0][0] != "NUMERO_CREDITO" || rows[0][1] != "IDENTIFICACION" {
+		t.Fatalf("encabezado espejo debe conservar columnas originales: got=%v", rows[0])
+	}
+}
+
 func TestValidationReport_MirrorSheetConDatosArchivo(t *testing.T) {
 	colOrder, _ := json.Marshal([]string{"IDENTIFICACION", "PRIMA MENSUAL"})
 	raw, _ := json.Marshal(map[string]string{

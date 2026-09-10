@@ -1169,15 +1169,36 @@ func validateFile(r io.Reader, fileID, fileName string, candidates []model.Produ
 		}
 		values["_file_name"] = fileName
 		values["product_id"] = p.ID
-		// Skip silencioso: si el credit_number ya está cargado en BD (corrida previa),
-		// ignoramos la fila por completo — no se inserta, no aparece en el informe de
-		// novedades y no bloquea al resto del archivo. Solo aplica cuando hay credit_number;
-		// las filas sin crédito siguen el flujo normal.
+		// Duplicado histórico: si el credit_number ya está cargado en BD (corrida previa),
+		// no se reinserta, pero la fila SÍ se arrastra al reporte de auditoría con nota
+		// informativa. Sin esto, un archivo cuyas filas son todas duplicados históricos deja
+		// el XLSX espejo con solo el encabezado. La fila lleva SkipInsert=true para que
+		// InsertPolicies la omita, y policy_status=SKIPPED_HISTORICAL_DUP para que las
+		// reglas de negocio, la gate de bloqueo y las cancelaciones MAPFRE/STOCK no la traten
+		// como una póliza real (aunque su credit_number sí entra a currentCredits del STOCK,
+		// que es el comportamiento correcto: la fila vino en el archivo).
 		if svc != nil && svc.store != nil {
 			if credit := strings.TrimSpace(values["credit_number"]); credit != "" {
 				if svc.store.PolicyCreditExists(p.ID, credit) ||
 					(codeAsProductID != "" && codeAsProductID != p.ID && svc.store.PolicyCreditExists(codeAsProductID, credit)) {
 					skippedHistoricalDupCount++
+					rawJSONBytes, _ := json.Marshal(values)
+					noteJSONBytes, _ := json.Marshal([]string{
+						noteInformativo("crédito ya cargado en corrida previa; fila omitida sin reinsertar"),
+					})
+					policies = append(policies, model.PolicyRecord{
+						FileID:         fileID,
+						ProductID:      p.ID,
+						FileName:       fileName,
+						RowNumber:      i + 1,
+						DocumentNumber: values["document_number"],
+						CreditNumber:   credit,
+						PolicyStatus:   model.PolicyStatusSkippedHistoricalDup,
+						RawDataJSON:    string(rawJSONBytes),
+						ValidationJSON: string(noteJSONBytes),
+						CreatedAt:      time.Now().UTC(),
+						SkipInsert:     true,
+					})
 					continue
 				}
 			}
@@ -1275,6 +1296,11 @@ func annotateInFileDuplicateRowNotes(policies []model.PolicyRecord, productCode 
 	code := strings.ToUpper(strings.TrimSpace(productCode))
 	groups := make(map[string][]int)
 	for i := range policies {
+		// Las filas SKIPPED_HISTORICAL_DUP viven solo para auditoría. Considerarlas aquí
+		// generaría falsos positivos de "duplicado dentro del archivo" contra ellas mismas.
+		if policies[i].SkipInsert {
+			continue
+		}
 		c := strings.TrimSpace(policies[i].CreditNumber)
 		if c == "" {
 			continue
