@@ -39,8 +39,20 @@ type FileEmailInput struct {
 // ErrorEmailInput mantiene compatibilidad con referencias previas.
 type ErrorEmailInput = FileEmailInput
 
+// FileDelivery resume qué quedó realmente entregado en el correo. El procesador la usa
+// para decidir si puede borrar los artefactos de disco: si el correo no llevaba adjunto,
+// el enlace de descarga es la única copia que le queda al operador, y borrarla lo
+// convertiría en un 404 permanente.
+type FileDelivery struct {
+	// Attached es true solo si el correo salió con el archivo (o el reporte) adjunto.
+	// Un correo aceptado por SendGrid sin adjunto NO cuenta como entrega utilizable.
+	Attached bool
+	// DownloadURL es el enlace público que quedó en el cuerpo del correo.
+	DownloadURL string
+}
+
 type FileNotifier interface {
-	NotifyFileProcessing(input FileEmailInput) error
+	NotifyFileProcessing(input FileEmailInput) (FileDelivery, error)
 }
 
 // ErrorNotifier mantiene compatibilidad con referencias previas.
@@ -48,8 +60,10 @@ type ErrorNotifier = FileNotifier
 
 type noopNotifier struct{}
 
-func (n *noopNotifier) NotifyFileProcessing(input FileEmailInput) error {
-	return nil
+func (n *noopNotifier) NotifyFileProcessing(input FileEmailInput) (FileDelivery, error) {
+	// Sin transporte no hay entrega: reportar Attached=false evita que el procesador borre
+	// artefactos que ningún correo llegó a transportar.
+	return FileDelivery{}, nil
 }
 
 type sendGridNotifier struct {
@@ -66,6 +80,12 @@ func NewFileNotifierFromEnv() FileNotifier {
 		log.Printf("[notify] sendgrid deshabilitado (faltan SENDGRID_API_KEY, SENDGRID_FROM_EMAIL o SENDGRID_ERROR_TO_EMAILS)")
 		return &noopNotifier{}
 	}
+	// Los destinatarios salen EXCLUSIVAMENTE de SENDGRID_ERROR_TO_EMAILS; no existe ninguna
+	// lista en código. Se registran al arrancar porque con dos despliegues conviviendo es fácil
+	// que uno esté publicando con el env equivocado y nadie se entere hasta que el operador
+	// dice que no le llega el correo.
+	log.Printf("[notify] sendgrid activo desde=%s destinatarios=%d (%s)",
+		from, len(recipients), strings.Join(recipients, ", "))
 	return &sendGridNotifier{
 		apiKey:     apiKey,
 		from:       from,
@@ -78,16 +98,18 @@ func NewErrorNotifierFromEnv() FileNotifier {
 	return NewFileNotifierFromEnv()
 }
 
-func (n *sendGridNotifier) NotifyFileProcessing(input FileEmailInput) error {
-	// Invariante: todo archivo procesado (PROCESSED/ERROR/SKIPPED) debe generar un correo con
-	// al menos un adjunto (archivo original, reporte de novedades o resumen mínimo).
+func (n *sendGridNotifier) NotifyFileProcessing(input FileEmailInput) (FileDelivery, error) {
+	// Invariante: todo archivo procesado (PROCESSED/ERROR/SKIPPED) genera un correo. El
+	// adjunto es el objetivo, pero cuando el archivo excede el límite de SendGrid el correo
+	// igual sale con el enlace de descarga — y en ese caso Attached=false para que el
+	// procesador no borre el único artefacto disponible.
 	switch strings.ToUpper(strings.TrimSpace(input.Status)) {
 	case "PROCESSED":
 		return n.notifyProcessedSuccess(input)
 	case "ERROR", "SKIPPED":
 		return n.notifyProcessingError(input)
 	default:
-		return nil
+		return FileDelivery{}, nil
 	}
 }
 
@@ -177,17 +199,33 @@ func (n *sendGridNotifier) summaryFallbackAttachment(input FileEmailInput) *emai
 	}
 }
 
-func (n *sendGridNotifier) notifyProcessedSuccess(input FileEmailInput) error {
-	attachments, hasNovedades, err := n.processedSuccessAttachments(input)
+func (n *sendGridNotifier) notifyProcessedSuccess(input FileEmailInput) (FileDelivery, error) {
+	attachments, hasNovedades, linkOnly, err := n.processedSuccessAttachments(input)
 	if err != nil {
-		return err
+		return FileDelivery{}, err
 	}
-	reportURL := validationReportDownloadURL(input.FileID)
+	reportURL := downloadURLForFile(input)
 	client := sendgrid.NewSendClient(n.apiKey)
 
 	send := func(atts []emailAttachment) (statusCode int, body string, err error) {
 		msg := n.composeSuccessMail(input, atts, hasNovedades, reportURL)
 		return sendWithBackoff(client, msg, input.FileID)
+	}
+
+	// El reporte excede el límite de SendGrid: política es correo SIN adjunto y solo con el
+	// enlace de descarga. No se intenta el adjunto, no se intenta un ZIP y tampoco se cae al
+	// resumen mínimo — mandar algo mejor que nada aquí contradice la instrucción explícita de
+	// que en estos casos solo vaya el link.
+	if linkOnly {
+		log.Printf("[notify] envío de éxito SIN adjunto (reporte excede límite) file_id=%s url=%q", input.FileID, reportURL)
+		status, body, err := send(nil)
+		if err != nil {
+			return FileDelivery{}, err
+		}
+		if status >= 200 && status < 300 {
+			return FileDelivery{Attached: false, DownloadURL: reportURL}, nil
+		}
+		return FileDelivery{}, fmt.Errorf("sendgrid (éxito solo enlace) status=%d body=%s", status, strings.TrimSpace(truncateForLog(body, 1800)))
 	}
 
 	trySend := func(atts []emailAttachment) (ok bool, status int, body string, err error) {
@@ -217,10 +255,10 @@ func (n *sendGridNotifier) notifyProcessedSuccess(input FileEmailInput) error {
 	for _, att := range attachments {
 		ok, st, body, err := trySend([]emailAttachment{att})
 		if err != nil {
-			return err
+			return FileDelivery{}, err
 		}
 		if ok {
-			return nil
+			return FileDelivery{Attached: true, DownloadURL: reportURL}, nil
 		}
 		if st == 413 {
 			label := "reporte-xlsx"
@@ -243,36 +281,48 @@ func (n *sendGridNotifier) notifyProcessedSuccess(input FileEmailInput) error {
 	if att := n.summaryFallbackAttachment(input); att != nil {
 		log.Printf("[notify] reintentando correo de éxito con resumen mínimo file_id=%s", input.FileID)
 		if ok, _, _, err := trySend([]emailAttachment{*att}); err != nil {
-			return err
+			return FileDelivery{}, err
 		} else if ok {
-			return nil
+			return FileDelivery{Attached: true, DownloadURL: reportURL}, nil
 		}
 	}
 
-	log.Printf("[notify] ADVERTENCIA: reintentando correo de éxito SIN adjunto file_id=%s", input.FileID)
+	log.Printf("[notify] ADVERTENCIA: reintentando correo de éxito SIN adjunto file_id=%s url=%q", input.FileID, reportURL)
 	status2, body2, err2 := send(nil)
 	if err2 != nil {
-		return err2
+		return FileDelivery{}, err2
 	}
 	if status2 >= 200 && status2 < 300 {
-		return nil
+		// Aceptado pero sin adjunto: el enlace es lo único que le sirve al operador, así que
+		// Attached=false para que el procesador conserve el archivo en disco.
+		return FileDelivery{Attached: false, DownloadURL: reportURL}, nil
 	}
-	return fmt.Errorf("sendgrid (éxito sin adjunto) status=%d body=%s", status2, strings.TrimSpace(truncateForLog(body2, 1800)))
+	return FileDelivery{}, fmt.Errorf("sendgrid (éxito sin adjunto) status=%d body=%s", status2, strings.TrimSpace(truncateForLog(body2, 1800)))
 }
 
-func (n *sendGridNotifier) processedSuccessAttachments(input FileEmailInput) ([]emailAttachment, bool, error) {
+// processedSuccessAttachments arma los candidatos de adjunto del correo de éxito y señala si
+// el caso es "solo enlace" (linkOnly), que ocurre cuando no hay espejo útil o cuando el espejo
+// excede el límite de SendGrid. Se lee el espejo una sola vez porque puede pesar decenas de MB.
+func (n *sendGridNotifier) processedSuccessAttachments(input FileEmailInput) (atts []emailAttachment, hasNovedades, linkOnly bool, err error) {
 	// El XLSX espejo archivado a disco por el procesador es la única fuente autorizada
 	// del adjunto: garantiza que el operador reciba exactamente el mismo Excel que quedó
 	// registrado. Sin dependencias de JSON en MySQL ni regeneración en tiempo de envío.
-	hasNovedades := strings.TrimSpace(input.ValidationReportJSON) != ""
+	hasNovedades = strings.TrimSpace(input.ValidationReportJSON) != ""
 	b := n.mirrorFromReportArchive(input)
 	if len(b) == 0 {
-		return nil, hasNovedades, nil
+		// Sin espejo: puede seguir siendo PROCESSED sin novedades, y en ese caso el flujo
+		// normal de adjuntos (resumen mínimo) sigue siendo válido.
+		return nil, hasNovedades, false, nil
 	}
-	return emailAttachmentCandidates(input.FileName, input.FileID, b), hasNovedades, nil
+	if len(b) > maxEmailAttachmentBytes {
+		log.Printf("[notify] espejo de éxito excede límite SendGrid file_id=%s bytes=%d max=%d — correo sin adjunto, solo enlace",
+			input.FileID, len(b), maxEmailAttachmentBytes)
+		return nil, hasNovedades, true, nil
+	}
+	return emailAttachmentCandidates(input.FileName, input.FileID, b), hasNovedades, false, nil
 }
 
-func (n *sendGridNotifier) notifyProcessingError(input FileEmailInput) error {
+func (n *sendGridNotifier) notifyProcessingError(input FileEmailInput) (FileDelivery, error) {
 	client := sendgrid.NewSendClient(n.apiKey)
 
 	// Prioridad del adjunto en errores:
@@ -284,7 +334,7 @@ func (n *sendGridNotifier) notifyProcessingError(input FileEmailInput) error {
 	//   3) Sin adjunto: si no hay ninguno de los dos (p.ej. descarga parcial por caída
 	//      de red), correo texto-solo con el motivo del error. Nunca stub engañoso.
 	xlsxBytes := n.mirrorFromReportArchive(input)
-	downloadURL := validationReportDownloadURL(input.FileID)
+	downloadURL := downloadURLForFile(input)
 	reportTooLarge := len(xlsxBytes) > 0 && len(xlsxBytes) > maxEmailAttachmentBytes
 	if reportTooLarge {
 		log.Printf("[notify] espejo excede el límite de SendGrid file_id=%s bytes=%d max=%d — se envía correo con URL",
@@ -330,10 +380,10 @@ func (n *sendGridNotifier) notifyProcessingError(input FileEmailInput) error {
 			}
 			ok, st, body, err := trySend([]emailAttachment{att}, errAttEspejo, label)
 			if err != nil {
-				return err
+				return FileDelivery{}, err
 			}
 			if ok {
-				return nil
+				return FileDelivery{Attached: true, DownloadURL: downloadURL}, nil
 			}
 			if st == 413 {
 				log.Printf("[notify] sendgrid 413 con %s; siguiente formato file_id=%s body=%s",
@@ -355,14 +405,14 @@ func (n *sendGridNotifier) notifyProcessingError(input FileEmailInput) error {
 	if reportTooLarge {
 		status, body, err := send(nil, errAttEspejoOversized)
 		if err != nil {
-			return err
+			return FileDelivery{}, err
 		}
 		if status >= 200 && status < 300 {
-			log.Printf("[notify] correo enviado con URL de descarga (espejo %d bytes excede límite) file_id=%s",
-				len(xlsxBytes), input.FileID)
-			return nil
+			log.Printf("[notify] correo enviado con URL de descarga (espejo %d bytes excede límite) file_id=%s url=%q",
+				len(xlsxBytes), input.FileID, downloadURL)
+			return FileDelivery{Attached: false, DownloadURL: downloadURL}, nil
 		}
-		return fmt.Errorf("sendgrid (correo con URL) status=%d body=%s", status, strings.TrimSpace(truncateForLog(body, 1800)))
+		return FileDelivery{}, fmt.Errorf("sendgrid (correo con URL) status=%d body=%s", status, strings.TrimSpace(truncateForLog(body, 1800)))
 	}
 
 	// Caso 3: no hay espejo útil → error genérico. Adjuntamos el archivo ORIGINAL
@@ -370,10 +420,10 @@ func (n *sendGridNotifier) notifyProcessingError(input FileEmailInput) error {
 	if att := n.originalFromArchive(input); att != nil {
 		ok, st, body, err := trySend([]emailAttachment{*att}, errAttOriginal, "original-sftp")
 		if err != nil {
-			return err
+			return FileDelivery{}, err
 		}
 		if ok {
-			return nil
+			return FileDelivery{Attached: true, DownloadURL: downloadURL}, nil
 		}
 		if st != 0 {
 			log.Printf("[notify] sendgrid rechazó original file_id=%s status=%d body=%s",
@@ -389,13 +439,18 @@ func (n *sendGridNotifier) notifyProcessingError(input FileEmailInput) error {
 	//  y se borró.)
 	status2, body2, err2 := send(nil, errAttNone)
 	if err2 != nil {
-		return err2
+		return FileDelivery{}, err2
 	}
 	if status2 >= 200 && status2 < 300 {
-		log.Printf("[notify] correo de error enviado sin adjunto file_id=%s", input.FileID)
-		return nil
+		// Caso típico de "el archivo es más grande que el límite de SendGrid": el correo sale
+		// (por eso el operador recibe la notificación del fallo) pero sin adjunto. Como el
+		// enlace apunta al original y es la única vía de acceso, Attached=false mantiene el
+		// archivo en disco en lugar de borrarlo y dejar un enlace muerto.
+		log.Printf("[notify] correo de error enviado SIN adjunto file_id=%s url=%q — el original queda en disco para descarga",
+			input.FileID, downloadURL)
+		return FileDelivery{Attached: false, DownloadURL: downloadURL}, nil
 	}
-	return fmt.Errorf("sendgrid (sin adjunto) status=%d body=%s", status2, strings.TrimSpace(truncateForLog(body2, 1800)))
+	return FileDelivery{}, fmt.Errorf("sendgrid (sin adjunto) status=%d body=%s", status2, strings.TrimSpace(truncateForLog(body2, 1800)))
 }
 
 // errorAttachmentKind identifica qué adjunto (si hay) lleva el correo de error, y
@@ -411,17 +466,31 @@ const (
 )
 
 // emailAttachmentCandidates ordena .xlsx y .zip; ZIP primero si el libro supera emailZipPreferMinBytes.
+//
+// Regla dura: si el contenido ya excede maxEmailAttachmentBytes NO se propone ningún adjunto
+// —ni el XLSX ni un ZIP— y la función devuelve lista vacía. Comprimir un archivo que de todos
+// modos no va a caber solo gasta CPU y memoria para terminar descartando el adjunto igual; el
+// llamador detecta la lista vacía y envía el correo solo con el enlace de descarga.
 func emailAttachmentCandidates(fileName, fileID string, xlsxBytes []byte) []emailAttachment {
+	if len(xlsxBytes) == 0 || len(xlsxBytes) > maxEmailAttachmentBytes {
+		return nil
+	}
 	xlsxName := validationReportAttachmentFilename(fileName, fileID, ".xlsx")
 	xlsxAtt := emailAttachment{
 		data:     xlsxBytes,
 		filename: xlsxName,
 		mime:     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 	}
-	out := []emailAttachment{xlsxAtt}
+	// Intentar comprimir un archivo que ya roza el límite no puede salvarlo (el ZIP como
+	// mejor baja ~2x, y un XLSX ya es un contenedor ZIP: comprimirlo aporta poco) y sí
+	// duplica la memoria pico del proceso, que compite con la carga de los libros. Solo se
+	// construye el ZIP cuando hay margen real de sobra.
+	if len(xlsxBytes) > maxEmailAttachmentBytes/2 {
+		return []emailAttachment{xlsxAtt}
+	}
 	zipBytes, zipName, err := zipEmailAttachment(xlsxName, xlsxBytes)
 	if err != nil || len(zipBytes) == 0 {
-		return out
+		return []emailAttachment{xlsxAtt}
 	}
 	zipAtt := emailAttachment{data: zipBytes, filename: zipName, mime: "application/zip"}
 	if len(xlsxBytes) >= emailZipPreferMinBytes {
@@ -458,6 +527,28 @@ func zipEmailAttachment(innerName string, data []byte) ([]byte, string, error) {
 
 func validationReportDownloadURL(fileID string) string {
 	return publicFileURL("/api/v1/files/validation-xlsx?file_id=", fileID)
+}
+
+// originalFileDownloadURL sirve el archivo tal cual llegó del SFTP, sin transformar.
+func originalFileDownloadURL(fileID string) string {
+	return publicFileURL("/api/v1/files/download?file_id=", fileID)
+}
+
+// downloadURLForFile decide a qué artefacto apunta el enlace del correo.
+//
+// El reporte XLSX solo existe cuando hubo novedades por fila (ReportArchivePath). Cuando el
+// producto no se identifica, el archivo ni siquiera alcanza la fase de mapeo: no hay reporte,
+// y el enlace "/validation-xlsx" devuelve 404. En ese caso el único artefacto real es el
+// original, así que el enlace debe apuntar a /files/download.
+//
+// La condición es la existencia del reporte y no "se encontró el producto" porque ambas
+// faltan juntas: un archivo PROCESSED sin novedades tampoco tiene reporte, y en ese caso
+// el original es igual el enlace útil.
+func downloadURLForFile(input FileEmailInput) string {
+	if strings.TrimSpace(input.ReportArchivePath) == "" {
+		return originalFileDownloadURL(input.FileID)
+	}
+	return validationReportDownloadURL(input.FileID)
 }
 
 func publicFileURL(pathPrefix, fileID string) string {
@@ -755,14 +846,26 @@ func buildPlainBody(input FileEmailInput, adjuntoExcel, adjuntoOriginal, reporte
 	return strings.TrimSpace(b.String())
 }
 
+// nl2br convierte saltos de línea en <br> para que los diagnósticos multilínea del
+// processor (motivo de fallo de producto, columnas que faltaron) se lean como lista
+// en el HTML. Escapa el texto con HTMLEscapeString antes de inyectar las etiquetas <br>,
+// para que un motivo de error con HTML dentro no se interprete como marcado.
+func nl2br(s string) template.HTML {
+	return template.HTML(strings.ReplaceAll(template.HTMLEscapeString(s), "\n", "<br>"))
+}
+
+// templateErrorEmail y templateSuccessEmail se parsean una vez por proceso: las
+// plantillas son constantes y html/template es seguro para uso concurrente.
+var (
+	templateErrorEmail   = template.Must(template.New("error-email").Funcs(template.FuncMap{"nl2br": nl2br}).Parse(errorEmailTemplate))
+	templateSuccessEmail = template.Must(template.New("success-email").Funcs(template.FuncMap{"nl2br": nl2br}).Parse(successEmailTemplate))
+)
+
 func buildHTMLBody(input FileEmailInput, adjuntoExcel, adjuntoOriginal, reporteMuyGrande bool, downloadURL string) string {
 	data := buildReportEmailData(input, adjuntoExcel, adjuntoOriginal, reporteMuyGrande, downloadURL)
-	tpl, err := template.New("error-email").Parse(errorEmailTemplate)
-	if err != nil {
-		return strings.ReplaceAll(buildPlainBody(input, adjuntoExcel, adjuntoOriginal, reporteMuyGrande, downloadURL), "\n", "<br>")
-	}
 	var b bytes.Buffer
-	if err := tpl.Execute(&b, data); err != nil {
+	if err := templateErrorEmail.Execute(&b, data); err != nil {
+		log.Printf("[notify] no se pudo renderizar HTML de error file_id=%s err=%v", input.FileID, err)
 		return strings.ReplaceAll(buildPlainBody(input, adjuntoExcel, adjuntoOriginal, reporteMuyGrande, downloadURL), "\n", "<br>")
 	}
 	return b.String()
@@ -855,10 +958,6 @@ func buildSuccessPlainBody(input FileEmailInput, adjuntos bool, hasNovedades boo
 }
 
 func buildSuccessHTMLBody(input FileEmailInput, adjuntos bool, hasNovedades bool, reportDownloadURL string) string {
-	tpl, err := template.New("success-email").Parse(successEmailTemplate)
-	if err != nil {
-		return strings.ReplaceAll(buildSuccessPlainBody(input, adjuntos, hasNovedades, reportDownloadURL), "\n", "<br>")
-	}
 	data := struct {
 		FileName           string
 		ProductID          string
@@ -879,7 +978,8 @@ func buildSuccessHTMLBody(input FileEmailInput, adjuntos bool, hasNovedades bool
 		data.ProcesadoEn = "No disponible"
 	}
 	var b bytes.Buffer
-	if err := tpl.Execute(&b, data); err != nil {
+	if err := templateSuccessEmail.Execute(&b, data); err != nil {
+		log.Printf("[notify] no se pudo renderizar HTML de éxito file_id=%s err=%v", input.FileID, err)
 		return strings.ReplaceAll(buildSuccessPlainBody(input, adjuntos, hasNovedades, reportDownloadURL), "\n", "<br>")
 	}
 	return b.String()
@@ -957,7 +1057,7 @@ const errorEmailTemplate = `
             {{end}}
 
             <p style="margin:0 0 8px;font-size:13px;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:0.3px;">Detalle del sistema</p>
-            <p style="margin:0 0 24px;font-size:13px;line-height:1.5;color:#555;background:#f8f9fa;padding:12px 14px;border-radius:4px;">{{.DetalleCarga}}</p>
+            <p style="margin:0 0 24px;font-size:13px;line-height:1.6;color:#555;background:#f8f9fa;padding:12px 14px;border-radius:4px;">{{nl2br .DetalleCarga}}</p>
 
             {{if .AdjuntoExcel}}
             <div style="background:#eef4fc;padding:16px;border-radius:6px;margin-bottom:8px;">

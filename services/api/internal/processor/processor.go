@@ -193,25 +193,30 @@ func (s *Service) runJob(workerID int, job queuedJob) {
 		log.Printf("[processor] worker_%d FinalizeFileStatus falló file_id=%s err=%v", workerID, job.ID, err)
 	}
 	terminalWritten = true
-	notifyErr := s.notifyFileProcessing(rec)
-	// Solo borramos del disco cuando el archivo terminó en ERROR y el correo se envió con
-	// éxito — así el operador siempre recibe el adjunto y no queda una copia huérfana en
-	// disco. PROCESSED conserva la copia porque la UI la descarga desde /files/download.
-	if notifyErr == nil && rec.Status == model.FileStatusError {
+	notifyErr, delivery := s.notifyFileProcessing(rec)
+	// Solo borramos del disco cuando el archivo terminó en ERROR **y el correo salió con el
+	// archivo adjunto**. Si el correo fue sin adjunto —típico cuando el original excede el
+	// límite de SendGrid— el enlace de descarga es la única copia que le queda al operador,
+	// y borrarla convertiría ese enlace en un 404. PROCESSED conserva la copia porque la UI la
+	// descarga desde /files/download.
+	if debeBorrarArtefactos(rec.Status, notifyErr, delivery) {
 		cleanupTerminalArtifacts(rec)
+	} else if notifyErr == nil && rec.Status == model.FileStatusError {
+		log.Printf("[processor] se conserva archive_path por correo sin adjunto file_id=%s path=%q",
+			rec.ID, strings.TrimSpace(rec.ArchivePath))
 	}
 	finalErr := rec.ErrorReason
 	s.updateProgress(job.ID, job.FileName, string(rec.Status), 100, "finalizado", rec.ProductID, finalErr)
 	log.Printf("[processor] worker_%d finalizó file_id=%s status=%s", workerID, job.ID, rec.Status)
 }
 
-func (s *Service) notifyFileProcessing(rec model.FileProcessRecord) error {
+func (s *Service) notifyFileProcessing(rec model.FileProcessRecord) (error, notify.FileDelivery) {
 	// Invariante: todo archivo que llegó a estado terminal debe generar un correo con adjunto.
 	// PROCESSED/ERROR/SKIPPED reciben notificación; PENDING/QUEUED/PROCESSING nunca llegan aquí.
 	if rec.Status != model.FileStatusProcessed && rec.Status != model.FileStatusError && rec.Status != model.FileStatusSkipped {
-		return nil
+		return nil, notify.FileDelivery{}
 	}
-	err := s.notifier.NotifyFileProcessing(notify.FileEmailInput{
+	delivery, err := s.notifier.NotifyFileProcessing(notify.FileEmailInput{
 		FileID:               rec.ID,
 		FileName:             rec.FileName,
 		ProductID:            rec.ProductID,
@@ -227,7 +232,7 @@ func (s *Service) notifyFileProcessing(rec model.FileProcessRecord) error {
 		if setErr := s.store.SetFileEmailError(rec.ID, err.Error()); setErr != nil {
 			log.Printf("[notify] no se pudo guardar email_error file_id=%s err=%v", rec.ID, setErr)
 		}
-		return err
+		return err, delivery
 	}
 	// email_error a NULL como marca de "correo OK": la columna es la fuente de verdad
 	// que la API expone, no dependemos solo de que el operador lea el log.
@@ -236,13 +241,30 @@ func (s *Service) notifyFileProcessing(rec model.FileProcessRecord) error {
 	}
 	switch rec.Status {
 	case model.FileStatusProcessed:
-		log.Printf("[notify] correo de éxito enviado file_id=%s", rec.ID)
+		log.Printf("[notify] correo de éxito enviado file_id=%s adjunto=%t url=%q", rec.ID, delivery.Attached, delivery.DownloadURL)
 	case model.FileStatusError:
-		log.Printf("[notify] correo de error enviado file_id=%s", rec.ID)
+		log.Printf("[notify] correo de error enviado file_id=%s adjunto=%t url=%q", rec.ID, delivery.Attached, delivery.DownloadURL)
 	case model.FileStatusSkipped:
-		log.Printf("[notify] correo de omisión enviado file_id=%s", rec.ID)
+		log.Printf("[notify] correo de omisión enviado file_id=%s adjunto=%t url=%q", rec.ID, delivery.Attached, delivery.DownloadURL)
 	}
-	return nil
+	return nil, delivery
+}
+
+// debeBorrarArtefactos decide si las copias locales de un archivo en estado terminal se
+// pueden eliminar. Extraído como función pura para poder testear la política sin base de datos.
+//
+// Regla: solo se borra en ERROR, solo si el correo se envió sin error, y solo si el correo
+// llevaba el archivo adjunto. El caso decisivo es ese último: un correo aceptado por SendGrid
+// sin adjunto no le da nada al operador, así que el archivo en disco es su única vía de acceso
+// y el enlace del correo dejaría de funcionar si lo borráramos.
+func debeBorrarArtefactos(status model.FileProcessStatus, notifyErr error, delivery notify.FileDelivery) bool {
+	if status != model.FileStatusError {
+		return false
+	}
+	if notifyErr != nil {
+		return false
+	}
+	return delivery.Attached
 }
 
 // cleanupTerminalArtifacts borra las copias locales en disco (original + reporte XLSX)
@@ -746,7 +768,7 @@ func (s *Service) processOne(src fileSource, job queuedJob) model.FileProcessRec
 	products := s.store.FindProductFormatCandidates(fileName)
 	if len(products) == 0 {
 		rec.Status = model.FileStatusError
-		rec.ErrorReason = "no existe producto configurado para el prefijo del archivo"
+		rec.ErrorReason = motivoFaltaProducto(s.store.DiagnoseFormatPrefixMatch(fileName))
 		// Descargamos el archivo original para adjuntarlo al correo — sin producto configurado
 		// no llegamos a validateFile, así que sin este paso el operador recibiría el mail sin
 		// ningún adjunto útil. La descarga también calcula el SHA-256 para que, si el archivo
@@ -1341,6 +1363,64 @@ func decodeValidationNotesJSON(raw string) []string {
 	return notes
 }
 
+// requiredHeaderGap compara los encabezados de una hoja contra los mappings de un
+// formato y devuelve cuántos requeridos encontró, cuántos esperaba y cuáles faltan.
+// Es la base del diagnóstico de "el template de la aseguradora cambió".
+func requiredHeaderGap(header []string, mappings []model.FieldMap) (present, total int, missing []string) {
+	hidx := make(map[string]struct{}, len(header))
+	for _, h := range header {
+		hidx[strings.ToUpper(strings.TrimSpace(h))] = struct{}{}
+	}
+	for _, m := range mappings {
+		if !m.Required {
+			continue
+		}
+		total++
+		if _, ok := hidx[strings.ToUpper(strings.TrimSpace(m.SourceHeader))]; ok {
+			present++
+			continue
+		}
+		missing = append(missing, strings.TrimSpace(m.SourceHeader))
+	}
+	return present, total, missing
+}
+
+// motivoFaltaProducto redacta el motivo exacto por el que un archivo no tuvo producto,
+// pensado para el correo al equipo. Se arma con DiagnoseFormatPrefixMatch (no lee el
+// workbook, así que no añade memoria al pipeline).
+func motivoFaltaProducto(diag store.FormatPrefixDiagnosis) string {
+	var b strings.Builder
+	b.WriteString("no existe producto configurado para el prefijo del archivo")
+
+	if len(diag.InactiveMatches) > 0 {
+		parts := make([]string, 0, len(diag.InactiveMatches))
+		for _, m := range diag.InactiveMatches {
+			detalle := fmt.Sprintf("prefijo %q en el formato %s", m.FilePrefix, m.Code)
+			if s := strings.TrimSpace(m.SheetName); s != "" {
+				detalle += fmt.Sprintf(" (hoja %q)", s)
+			}
+			parts = append(parts, detalle)
+		}
+		b.WriteString("\nCausa: el nombre del archivo sí coincide con ")
+		if len(parts) == 1 {
+			b.WriteString("un formato, pero está DESACTIVADO (active=0): ")
+		} else {
+			b.WriteString(strconv.Itoa(len(parts)) + " formatos, pero todos están DESACTIVADOS (active=0): ")
+		}
+		b.WriteString(strings.Join(parts, "; ") + ".")
+		b.WriteString("\nAcción: active el formato en /api/v1/product-formats o renombre el prefijo si la aseguradora cambió la convención del archivo.")
+	} else {
+		b.WriteString("\nCausa: ninguno de los prefijos configurados aparece en el nombre del archivo.")
+		if diag.ActiveCount > 0 {
+			b.WriteString(fmt.Sprintf(" Hay %d formato(s) activo(s) registrados, pero ninguno matchea.", diag.ActiveCount))
+		} else {
+			b.WriteString(" No hay formatos activos registrados en product_formats.")
+		}
+		b.WriteString("\nAcción: si la aseguradora cambió el nombre o la convención del archivo, dar de alta el prefijo en /api/v1/product-formats.")
+	}
+	return b.String()
+}
+
 func notesContainInFileDuplicateSignal(notes []string) bool {
 	for _, n := range notes {
 		lower := strings.ToLower(n)
@@ -1637,7 +1717,7 @@ func selectProductCandidateFromWorkbook(tmpPath string, candidates []model.Produ
 		}
 	}
 	if bestScore < 0 {
-		return model.Product{}, nil, nil, fmt.Errorf("ningún formato coincide con encabezados requeridos del archivo")
+		return model.Product{}, nil, nil, fmt.Errorf("%s", motivoHeadersNoCoinciden(sheets, candidates))
 	}
 	log.Printf("[processor] hoja seleccionada file=%q producto=%q hoja=%q score=%d", filepath.Base(tmpPath), best.Code, bestSheetName, bestScore)
 	return best, bestHeader, bestRows, nil
@@ -1646,6 +1726,74 @@ func selectProductCandidateFromWorkbook(tmpPath string, candidates []model.Produ
 type workbookSheet struct {
 	name string
 	rows [][]string
+}
+
+// motivoHeadersNoCoinciden explica por qué ningún formato reconoció la hoja, reutilizando
+// las hojas ya cargadas (no vuelve a leer el workbook, así que no añade memoria). Reporta
+// la combinación (formato, hoja) más cercana — la que más columnas requeridas encontró — y
+// cuáles faltaron: es la señal directa de que la aseguradora renombró o quitó columnas.
+func motivoHeadersNoCoinciden(sheets []workbookSheet, candidates []model.Product) string {
+	type combo struct {
+		prod    model.Product
+		sheet   string
+		present int
+		total   int
+		missing []string
+	}
+	var best combo
+	found := false
+
+	for _, c := range candidates {
+		if c.HeaderRow <= 0 {
+			continue
+		}
+		for _, sh := range sheets {
+			if len(sh.rows) < c.HeaderRow {
+				continue
+			}
+			present, total, missing := requiredHeaderGap(sh.rows[c.HeaderRow-1], c.Mappings)
+			if !found || present > best.present {
+				best = combo{prod: c, sheet: sh.name, present: present, total: total, missing: missing}
+				found = true
+			}
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("ningún formato coincide con los encabezados requeridos del archivo")
+
+	if !found {
+		b.WriteString("\nCausa: no se pudo evaluar ningún par (formato, hoja) — revise header_row de los formatos y que el libro tenga hojas legibles.")
+		return b.String()
+	}
+
+	b.WriteString(fmt.Sprintf("\nCausa más probable: la hoja %q del formato %s tiene %d de %d columnas requeridas; faltan: %s.",
+		best.sheet, best.prod.Code, best.present, best.total, listarHeadersFaltantes(best.missing)))
+	b.WriteString(fmt.Sprintf(" Se evaluaron %d hoja(s) contra %d formato(s) activo(s) del prefijo.",
+		len(sheets), len(candidates)))
+	b.WriteString("\nAcción: si la aseguradora renombró o quitó columnas, actualice los encabezados esperados (source_header/aliases) del formato vía /api/v1/product-formats.")
+	return b.String()
+}
+
+// listarHeadersFaltantes acota la lista para que el correo no crezca sin control: los
+// primeros 12 y, si hay más, el conteo restante.
+func listarHeadersFaltantes(missing []string) string {
+	if len(missing) == 0 {
+		return "ninguna, pero hasAllRequiredHeaders las marcó como ausentes (revise header_row del formato)"
+	}
+	const max = 12
+	if len(missing) <= max {
+		return quoteJoin(missing)
+	}
+	return quoteJoin(missing[:max]) + fmt.Sprintf(" (+%d más)", len(missing)-max)
+}
+
+func quoteJoin(items []string) string {
+	out := make([]string, 0, len(items))
+	for _, it := range items {
+		out = append(out, fmt.Sprintf("%q", it))
+	}
+	return strings.Join(out, ", ")
 }
 
 // readAllSheetsFromWorkbook devuelve todas las hojas del libro con sus filas, en el orden

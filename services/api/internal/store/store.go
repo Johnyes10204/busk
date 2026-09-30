@@ -232,6 +232,78 @@ func (s *Store) SetProductFormatActive(formatID string, active bool) error {
 	return err
 }
 
+// InactiveFormatMatch describe un formato cuyo prefijo SÍ aparece en el nombre del
+// archivo pero que está desactivado (active = 0), por lo que FindProductFormatCandidates
+// no lo devuelve. Es la causa más frecuente de un "no existe producto configurado" y la
+// que hay que reportar cuando la aseguradora cambia el template.
+type InactiveFormatMatch struct {
+	Code       string
+	FilePrefix string
+	Priority   int
+	SheetName  string
+}
+
+// FormatPrefixDiagnosis explica por qué un archivo no coincidió con ningún formato activo.
+type FormatPrefixDiagnosis struct {
+	FileName        string
+	ActiveCount     int
+	InactiveMatches []InactiveFormatMatch
+}
+
+// DiagnoseFormatPrefixMatch busca el motivo por el que un archivo no matchea ningún
+// formato activo. No lee el workbook: solo compara el nombre contra product_formats,
+// así que es barato incluso con archivos grandes. Devuelve los formatos desactivados
+// que habrían matcheado y cuántos formatos activos hay configurados en total.
+func (s *Store) DiagnoseFormatPrefixMatch(fileName string) FormatPrefixDiagnosis {
+	diag := FormatPrefixDiagnosis{FileName: strings.TrimSpace(fileName)}
+	if diag.FileName == "" {
+		return diag
+	}
+
+	// Mismo criterio de match que FindProductFormatCandidates pero sin filtrar por
+	// active, para poder decir "el prefijo existe pero está desactivado".
+	sqlInactive, argsInactive, _ := s.sb.
+		Select("p.code", "f.file_prefix", "f.priority", "f.sheet_name").
+		From("product_formats f").
+		Join("products p ON p.id = f.product_id").
+		Where(sq.Expr("f.active = 0")).
+		Where(sq.Expr("UPPER(?) LIKE CONCAT('%', UPPER(f.file_prefix), '%')", diag.FileName)).
+		OrderBy("LENGTH(f.file_prefix) DESC", "f.priority DESC").
+		ToSql()
+
+	if rows, err := s.db.Query(sqlInactive, argsInactive...); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var m InactiveFormatMatch
+			var sheet sql.NullString
+			if err := rows.Scan(&m.Code, &m.FilePrefix, &m.Priority, &sheet); err != nil {
+				continue
+			}
+			if sheet.Valid {
+				m.SheetName = sheet.String
+			}
+			diag.InactiveMatches = append(diag.InactiveMatches, m)
+		}
+	}
+
+	sqlCount, argsCount, _ := s.sb.
+		Select("COUNT(*)").
+		From("product_formats f").
+		Where(sq.Expr("f.active = 1")).
+		ToSql()
+	if rows, err := s.db.Query(sqlCount, argsCount...); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var n int
+			if err := rows.Scan(&n); err == nil {
+				diag.ActiveCount = n
+			}
+		}
+	}
+
+	return diag
+}
+
 func (s *Store) FindProductFormatCandidates(fileName string) []model.Product {
 	name := strings.TrimSpace(fileName)
 	if name == "" {

@@ -1,1 +1,5 @@
 .env
+
+# Binarios compilados. Nunca deben versionarse: son especificos de la maquina y ocupan ~20 MB.
+busk-api
+__debug_bin*
