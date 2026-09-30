@@ -1229,10 +1229,15 @@ func validateFile(r io.Reader, fileID, fileName string, candidates []model.Produ
 				if svc.store.PolicyCreditExists(p.ID, credit) ||
 					(codeAsProductID != "" && codeAsProductID != p.ID && svc.store.PolicyCreditExists(codeAsProductID, credit)) {
 					skippedHistoricalDupCount++
-					rawJSONBytes, _ := json.Marshal(values)
 					noteJSONBytes, _ := json.Marshal([]string{
 						noteInformativo("crédito ya cargado en corrida previa; fila omitida sin reinsertar"),
 					})
+					// RawDataJSON se deja vacío a propósito: completeFileValidationReport solo
+					// lee row_number, document_number, credit_number, policy_status y las
+					// notas de estas filas (store.go, rama SKIPPED_HISTORICAL_DUP), y
+					// InsertPolicies las omite. Serializar la fila entera para un archivo con
+					// ~167k duplicados históricos era el pico de memoria que hacía PM2 matar el
+					// proceso a mitad de la carga.
 					policies = append(policies, model.PolicyRecord{
 						FileID:         fileID,
 						ProductID:      p.ID,
@@ -1241,7 +1246,6 @@ func validateFile(r io.Reader, fileID, fileName string, candidates []model.Produ
 						DocumentNumber: values["document_number"],
 						CreditNumber:   credit,
 						PolicyStatus:   model.PolicyStatusSkippedHistoricalDup,
-						RawDataJSON:    string(rawJSONBytes),
 						ValidationJSON: string(noteJSONBytes),
 						CreatedAt:      time.Now().UTC(),
 						SkipInsert:     true,
