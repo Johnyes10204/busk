@@ -102,6 +102,14 @@ func New(st *store.Store) *Service {
 	}
 	log.Printf("[processor] inicializado workers=%d queue_capacity=%d", workers, cap(s.jobs))
 	log.Printf("[processor] PROCESSOR_READ_FULL_FILE_ON_ROW_ERRORS=%t", processorReadFullFileOnRowErrorsFromEnv())
+	// Se registra el gate porque su efecto no es visible en los logs de una corrida: si está
+	// activo, un archivo con filas con incidencias termina PROCESSED y no aparece ningún
+	// "solo_informe". Sin esta línea no hay forma de saber con qué política se procesó.
+	if processorImportWithReviewRowsFromEnv() {
+		log.Printf("[processor] PROCESSOR_IMPORT_WITH_REVIEW_ROWS=true (las filas con incidencia se guardan en MANUAL_REVIEW y no descartan el archivo)")
+	} else {
+		log.Printf("[processor] PROCESSOR_IMPORT_WITH_REVIEW_ROWS=false (el archivo completo se descarta si alguna fila tiene incidencia)")
+	}
 	// Antes de aceptar trabajo nuevo, se marcan como ERROR archivos que quedaron en estados
 	// transitorios (PROCESSING/QUEUED/PENDING) por una caída o reinicio previo. Así ninguna
 	// carga queda huérfana y el operador puede reintentar por la vía normal (ERROR → retry).
