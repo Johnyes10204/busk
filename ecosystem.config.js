@@ -13,7 +13,7 @@ module.exports = {
       max_memory_restart: '2G',
       env: {
         MYSQL_DSN: 'root:TU_CONTRASEÑA_AQUI@tcp(localhost:3306)/busk?parseTime=true&multiStatements=true',
-        PROCESSOR_WORKERS: '2',
+        PROCESSOR_WORKERS: '1',
         // Seguir leyendo tras una fila inválida en vez de abortar el archivo entero.
         PROCESSOR_READ_FULL_FILE_ON_ROW_ERRORS: 'true',
         // Gate de archivo: con true se cargan las filas válidas y las problemáticas quedan

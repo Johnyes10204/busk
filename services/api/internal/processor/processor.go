@@ -560,12 +560,13 @@ func (s *Service) processByName(job queuedJob) model.FileProcessRecord {
 
 // disposeRemoteToError intenta sacar el archivo de la raíz del SFTP con la siguiente
 // cascada de fallbacks:
-//  1) MOVE a carpeta ERROR/ (comportamiento preferido cuando los permisos alcanzan).
-//  2) Si el MOVE falla (típicamente permisos de mkdir/subcarpeta), rename in-place con
+//  1. MOVE a carpeta ERROR/ (comportamiento preferido cuando los permisos alcanzan).
+//  2. Si el MOVE falla (típicamente permisos de mkdir/subcarpeta), rename in-place con
 //     prefijo "ERROR-YYYYMMDDHHMMSS-" — casi siempre funciona porque no requiere
 //     permisos sobre subcarpetas y el scan filtra ese prefijo para no re-procesarlo.
-//  3) Si el rename también falla, el archivo queda en la raíz para revisión manual — nunca
+//  3. Si el rename también falla, el archivo queda en la raíz para revisión manual — nunca
 //     se borra del SFTP.
+//
 // Anexa al ErrorReason el detalle de cada fallo intermedio.
 func disposeRemoteToError(src fileSource, fileName string, rec *model.FileProcessRecord) {
 	dst, moveErr := src.MoveToFolder(fileName, "ERROR")
@@ -1095,9 +1096,16 @@ func validateFile(r io.Reader, fileID, fileName string, candidates []model.Produ
 		return nil, fileHash, archivePath, "", errDuplicateFileHash
 	}
 
-	p, header, rows, err := selectProductCandidateFromWorkbook(tmpPath, candidates)
+	p, header, bestSheetName, err := selectProductCandidateFromWorkbook(tmpPath, candidates)
 	if err != nil {
 		return nil, fileHash, archivePath, "", err
+	}
+
+	// Fase 2: ahora sí se carga el cuerpo, y sólo de la hoja que ganó la fase 1. Antes se
+	// traían todas las hojas completas desde el principio.
+	rows, err := loadSelectedSheetRows(tmpPath, bestSheetName)
+	if err != nil {
+		return nil, fileHash, archivePath, p.ID, fmt.Errorf("no se pudo leer la hoja %q: %w", bestSheetName, err)
 	}
 	headerIdx := make(map[string]int)
 	for i, h := range header {
@@ -1702,23 +1710,51 @@ func readRowsWithExcelize(tmpPath, sheetName string) ([][]string, error) {
 	return rows, nil
 }
 
+// maxHeaderRowsForCandidates calcula cuántas filas hacen falta como máximo para evaluar
+// todos los formatos candidatos: la fila de encabezado más un margen para los títulos que
+// las aseguradoras ponen encima de la tabla. Con eso la fase 1 puede parar el iterador sin
+// arriesgarse a descartar la fila que decide el match.
+func maxHeaderRowsForCandidates(candidates []model.Product) int {
+	maxRow := 0
+	for _, c := range candidates {
+		if c.HeaderRow > maxRow {
+			maxRow = c.HeaderRow
+		}
+	}
+	if maxRow == 0 {
+		return 20
+	}
+	// +10 de margen y un piso de 20 filas: cubre encabezados desplazados sin cargar el libro.
+	if r := maxRow + 10; r > 20 {
+		return r
+	}
+	return 20
+}
+
 // selectProductCandidateFromWorkbook prueba cada formato contra todas las hojas del libro
 // y elige la mejor combinación por score de encabezados mapeados. Si el candidato define
 // SheetName y una hoja del libro coincide, se prioriza esa hoja en desempate.
-func selectProductCandidateFromWorkbook(tmpPath string, candidates []model.Product) (model.Product, []string, [][]string, error) {
-	sheets, err := readAllSheetsFromWorkbook(tmpPath)
+//
+// Devuelve el NOMBRE de la hoja elegida y no sus filas a propósito: el cuerpo se carga
+// después, y sólo de la ganadora (readSheetRowsWithExcelize). Así el pico de memoria deja
+// de ser "todas las hojas completas" y pasa a ser "una hoja completa", que es lo que
+// mataba el proceso con MICRO_BANCO.xlsx (1.85 GB de 2 GB, moría en el paso 85%).
+//
+// La selección sigue siendo por score sobre encabezados, no por posición: la hoja correcta
+// no está garantizada que sea la primera, y atarse al índice cargaría la tabla equivocada.
+func selectProductCandidateFromWorkbook(tmpPath string, candidates []model.Product) (model.Product, []string, string, error) {
+	sheets, err := readSheetHeadersFromWorkbook(tmpPath, maxHeaderRowsForCandidates(candidates))
 	if err != nil {
-		return model.Product{}, nil, nil, err
+		return model.Product{}, nil, "", err
 	}
 	if len(sheets) == 0 {
-		return model.Product{}, nil, nil, fmt.Errorf("sin hojas en workbook")
+		return model.Product{}, nil, "", fmt.Errorf("sin hojas en workbook")
 	}
 
 	bestScore := -1
 	bestSheetPreferred := false
 	var best model.Product
 	var bestHeader []string
-	var bestRows [][]string
 	var bestSheetName string
 
 	for _, c := range candidates {
@@ -1740,16 +1776,16 @@ func selectProductCandidateFromWorkbook(tmpPath string, candidates []model.Produ
 				bestSheetPreferred = preferred
 				best = c
 				bestHeader = header
-				bestRows = sh.rows
 				bestSheetName = sh.name
 			}
 		}
 	}
 	if bestScore < 0 {
-		return model.Product{}, nil, nil, fmt.Errorf("%s", motivoHeadersNoCoinciden(sheets, candidates))
+		return model.Product{}, nil, "", fmt.Errorf("%s", motivoHeadersNoCoinciden(sheets, candidates))
 	}
-	log.Printf("[processor] hoja seleccionada file=%q producto=%q hoja=%q score=%d", filepath.Base(tmpPath), best.Code, bestSheetName, bestScore)
-	return best, bestHeader, bestRows, nil
+	log.Printf("[processor] hoja seleccionada file=%q producto=%q hoja=%q score=%d",
+		filepath.Base(tmpPath), best.Code, bestSheetName, bestScore)
+	return best, bestHeader, bestSheetName, nil
 }
 
 type workbookSheet struct {
@@ -1825,13 +1861,46 @@ func quoteJoin(items []string) string {
 	return strings.Join(out, ", ")
 }
 
-// readAllSheetsFromWorkbook devuelve todas las hojas del libro con sus filas, en el orden
-// declarado por el archivo. Prueba primero excelize (xlsx y algunos xls disfrazados) y cae
-// a xls legacy sólo si la extensión es .xls y excelize falla.
-func readAllSheetsFromWorkbook(tmpPath string) ([]workbookSheet, error) {
+// loadSelectedSheetRows carga el cuerpo de la hoja ya seleccionada. Ruta xlsx con excelize,
+// que es donde está el ahorro real de memoria; para .xls legacy cae al lector antiguo.
+func loadSelectedSheetRows(tmpPath, sheetName string) ([][]string, error) {
 	ext := strings.ToLower(filepath.Ext(tmpPath))
 	if ext == ".xlsx" || ext == ".xls" {
-		if sheets, err := readAllSheetsWithExcelize(tmpPath); err == nil {
+		rows, err := readSheetRowsWithExcelize(tmpPath, sheetName)
+		if err == nil {
+			return rows, nil
+		}
+		if ext != ".xls" {
+			return nil, err
+		}
+	}
+	if ext == ".xls" {
+		sheets, err := readAllSheetsWithXLS(tmpPath)
+		if err != nil {
+			return nil, err
+		}
+		for _, sh := range sheets {
+			if sh.name == sheetName {
+				return sh.rows, nil
+			}
+		}
+		return nil, fmt.Errorf("hoja %q no encontrada", sheetName)
+	}
+	return nil, fmt.Errorf("extensión no soportada: %s", ext)
+}
+
+// readSheetHeadersFromWorkbook devuelve, para cada hoja del libro, sólo las primeras
+// maxRows filas. Es la fase 1 de la lectura: la selección de formato y de hoja sólo
+// necesita la fila de encabezado (product_formats.header_row), así que no hay motivo para
+// materializar el cuerpo de las 20 hojas de un libro de 30 MB.
+//
+// Prueba primero excelize (xlsx y algunos xls disfrazados) y cae a xls legacy sólo si la
+// extensión es .xls y excelize falla; ese camino no admite iterador y carga la hoja entera,
+// pero es el formato antiguo y no se usa en las cargas diarias.
+func readSheetHeadersFromWorkbook(tmpPath string, maxRows int) ([]workbookSheet, error) {
+	ext := strings.ToLower(filepath.Ext(tmpPath))
+	if ext == ".xlsx" || ext == ".xls" {
+		if sheets, err := readSheetHeadersWithExcelize(tmpPath, maxRows); err == nil {
 			return sheets, nil
 		}
 	}
@@ -1841,7 +1910,30 @@ func readAllSheetsFromWorkbook(tmpPath string) ([]workbookSheet, error) {
 	return nil, fmt.Errorf("extensión no soportada: %s", ext)
 }
 
-func readAllSheetsWithExcelize(tmpPath string) ([]workbookSheet, error) {
+// readSheetRowsWithExcelize carga el cuerpo completo de UNA hoja, ya elegida. Es la fase 2:
+// en cualquier momento hay a lo sumo una hoja completa en memoria, en vez de todas a la vez.
+func readSheetRowsWithExcelize(tmpPath, sheetName string) ([][]string, error) {
+	f, err := excelize.OpenFile(tmpPath, excelize.Options{ShortDatePattern: "dd/mm/yyyy"})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+
+	rows, err := f.GetRows(sheetName, excelize.Options{ShortDatePattern: "dd/mm/yyyy", RawCellValue: false})
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// readSheetHeadersWithExcelize recorre cada hoja con el iterador de excelize y se detiene en
+// cuanto pasa la fila de encabezado. GetRows, en cambio, deserializa la hoja completa en un
+// [][]string y mantiene todas las hojas vivas a la vez: eso era el pico de memoria que
+// mataba el proceso con MICRO_BANCO.xlsx (1.85 GB de 2 GB, moría en el paso 85%).
+func readSheetHeadersWithExcelize(tmpPath string, maxRows int) ([]workbookSheet, error) {
+	if maxRows <= 0 {
+		maxRows = 50
+	}
 	f, err := excelize.OpenFile(tmpPath, excelize.Options{ShortDatePattern: "dd/mm/yyyy"})
 	if err != nil {
 		return nil, err
@@ -1854,15 +1946,41 @@ func readAllSheetsWithExcelize(tmpPath string) ([]workbookSheet, error) {
 	}
 	out := make([]workbookSheet, 0, len(names))
 	for _, name := range names {
-		rows, err := f.GetRows(name, excelize.Options{ShortDatePattern: "dd/mm/yyyy", RawCellValue: false})
+		rows, err := firstRowsWithExcelize(f, name, maxRows)
 		if err != nil {
-			log.Printf("[processor] no se pudo leer hoja %q en %q: %v (se ignora)", name, filepath.Base(tmpPath), err)
+			log.Printf("[processor] no se pudo leer encabezado de hoja %q en %q: %v (se ignora)", name, filepath.Base(tmpPath), err)
+			continue
+		}
+		if len(rows) == 0 {
 			continue
 		}
 		out = append(out, workbookSheet{name: name, rows: rows})
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("ninguna hoja legible en workbook")
+	}
+	return out, nil
+}
+
+// firstRowsWithExcelize lee hasta maxRows filas y cierra el iterador. El defer sobre Close
+// importa: sin él excelize mantiene vivos los handles del zip hasta el final de la función.
+func firstRowsWithExcelize(f *excelize.File, sheetName string, maxRows int) ([][]string, error) {
+	rows, err := f.Rows(sheetName)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make([][]string, 0, maxRows)
+	for rows.Next() {
+		cols, err := rows.Columns()
+		if err != nil {
+			return out, nil
+		}
+		out = append(out, cols)
+		if len(out) >= maxRows {
+			break
+		}
 	}
 	return out, nil
 }
@@ -2290,8 +2408,8 @@ func addMonthsClamped(t time.Time, months int) time.Time {
 // como válida (p. ej. fin de vigencia ajustado por cancelación en otro archivo/momento).
 //
 // Acepta DOS interpretaciones para la suma de meses:
-//  1) Clamping fin-de-mes (semántica de negocio: "31 ago + 6 m = 28 feb")
-//  2) Overflow de time.AddDate (semántica de Go: "31 ago + 6 m = 3 mar")
+//  1. Clamping fin-de-mes (semántica de negocio: "31 ago + 6 m = 28 feb")
+//  2. Overflow de time.AddDate (semántica de Go: "31 ago + 6 m = 3 mar")
 //
 // Si CUALQUIERA de las dos cae dentro de la tolerancia, la fila pasa. Sin esta doble
 // lectura, la única aceptada era la (2) y cierres al último día del mes generaban
