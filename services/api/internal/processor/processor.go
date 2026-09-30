@@ -888,6 +888,11 @@ func (s *Service) processOne(src fileSource, job queuedJob) model.FileProcessRec
 		}
 		rec.Status = model.FileStatusError
 		rec.ErrorReason = err.Error()
+		// validateFile devuelve selectedProductID incluso cuando aborta por una fila, así que
+		// aquí se conserva el producto que se identificó. Sin esto el registro quedaba con
+		// product_id NULL aunque el match por prefijo y hoja hubiera funcionado, y el operador
+		// no podía distinguir "producto no identificado" de "validación falló".
+		rec.ProductID = selectedProductID
 		rec.FileHash = fileHash
 		rec.ArchivePath = archivePath
 		disposeRemoteToError(src, fileName, &rec)
@@ -902,33 +907,45 @@ func (s *Service) processOne(src fileSource, job queuedJob) model.FileProcessRec
 
 	if policiesRowSetHasBlockingIssues(policies) {
 		nIssue := countPoliciesBlockingIssues(policies)
-		summary := fmt.Sprintf(
-			"carga omitida: %d filas con incidencias; ninguna póliza persistida (informe en validation_report)",
-			nIssue,
-		)
-		report := store.BuildFileValidationReportFromPolicies(
-			rec.ID,
-			fileName,
-			selectedProductID,
-			string(model.FileStatusError),
-			summary,
-			rec.ProcessedAt.UTC().Format(time.RFC3339Nano),
-			policies,
-		)
-		b, marshErr := json.Marshal(report)
-		if marshErr != nil {
+		// Opt-in (PROCESSOR_IMPORT_WITH_REVIEW_ROWS): en vez de descartar el archivo entero,
+		// se cargan las filas válidas y las problemáticas quedan en MANUAL_REVIEW, ya
+		// asignadas por validateFile. El informe de validación las documenta una por una.
+		//
+		// Desactivado por defecto a propósito: el comportamiento histórico es "ninguna póliza
+		// se persiste si hay una sola fila con incidencia", y cambiarlo en silencio ocultaría
+		// filas que antes se rechazaban. Con el flag activo el archivo termina PROCESSED y el
+		// reporte deja constancia de cuántas filas quedaron en revisión.
+		if !processorImportWithReviewRowsFromEnv() {
+			summary := fmt.Sprintf(
+				"carga omitida: %d filas con incidencias; ninguna póliza persistida (informe en validation_report)",
+				nIssue,
+			)
+			report := store.BuildFileValidationReportFromPolicies(
+				rec.ID,
+				fileName,
+				selectedProductID,
+				string(model.FileStatusError),
+				summary,
+				rec.ProcessedAt.UTC().Format(time.RFC3339Nano),
+				policies,
+			)
+			b, marshErr := json.Marshal(report)
+			if marshErr != nil {
+				rec.Status = model.FileStatusError
+				rec.ErrorReason = "no se pudo serializar informe de validación: " + marshErr.Error()
+				disposeRemoteToError(src, fileName, &rec)
+				return rec
+			}
+			rec.ValidationReportJSON = string(b)
+			rec.ReportArchivePath = saveValidationReportArchive(report, rec.ID, fileName)
 			rec.Status = model.FileStatusError
-			rec.ErrorReason = "no se pudo serializar informe de validación: " + marshErr.Error()
+			rec.ErrorReason = summary
 			disposeRemoteToError(src, fileName, &rec)
+			log.Printf("[processor] solo_informe file_id=%s filas_con_incidencias=%d", rec.ID, nIssue)
 			return rec
 		}
-		rec.ValidationReportJSON = string(b)
-		rec.ReportArchivePath = saveValidationReportArchive(report, rec.ID, fileName)
-		rec.Status = model.FileStatusError
-		rec.ErrorReason = summary
-		disposeRemoteToError(src, fileName, &rec)
-		log.Printf("[processor] solo_informe file_id=%s filas_con_incidencias=%d", rec.ID, nIssue)
-		return rec
+		log.Printf("[processor] import_con_revision file_id=%s filas_en_revision=%d filas_totales=%d — se persisten las filas válidas",
+			rec.ID, nIssue, len(policies))
 	}
 
 	if err := s.store.InsertPolicies(policies); err != nil {
@@ -2700,6 +2717,25 @@ func processorWorkersFromEnv() int {
 // (reglas de formato runRules o reglas de negocio applyDiagramRules).
 // true (defecto): se sigue leyendo el archivo y cada fila problemática se guarda con notas NOVEDAD y MANUAL_REVIEW cuando aplica.
 // false: el primer error de fila aborta el archivo (sin insertar pólizas).
+// processorImportWithReviewRowsFromEnv controla el gate de archivo completo.
+//
+// false (defecto, comportamiento histórico): si cualquier fila tiene una incidencia
+// bloqueante, no se persiste NINGUNA póliza del archivo y el archivo termina en ERROR.
+// true: se persisten las filas válidas; las que tienen incidencia quedan con
+// policy_status = MANUAL_REVIEW y el informe de validación las lista una por una.
+//
+// Es un opt-in explícito porque el segundo modo cambia qué datos entran a producción:
+// pasar de "todo o nada" a "cargar lo válido" no debe activarse por accidente.
+func processorImportWithReviewRowsFromEnv() bool {
+	raw := strings.TrimSpace(strings.ToLower(os.Getenv("PROCESSOR_IMPORT_WITH_REVIEW_ROWS")))
+	switch raw {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 func processorReadFullFileOnRowErrorsFromEnv() bool {
 	raw := strings.TrimSpace(strings.ToLower(os.Getenv("PROCESSOR_READ_FULL_FILE_ON_ROW_ERRORS")))
 	if raw == "" {

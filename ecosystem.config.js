@@ -1,14 +1,3 @@
-// Secretos por process.env a propósito: este archivo está versionado y GitHub bloquea los
-// pushes que contienen credenciales (push protection). Exportarlas antes de arrancar PM2:
-//
-//   export MYSQL_DSN='root:TU_CONTRASEÑA@tcp(localhost:3306)/busk?parseTime=true&multiStatements=true'
-//   export SFTP_PASSWORD='...'
-//   export SENDGRID_API_KEY='SG....'
-//   pm2 restart busk-api --update-env
-//
-// Ojo: la app carga el .env con godotenv.Load, que NO pisa variables ya presentes en el
-// entorno. Por eso PM2 gana sobre el .env: si aquí se define una variable con un valor
-// equivocado (o un placeholder), ese valor manda y el .env no lo corrige.
 module.exports = {
   apps: [
     {
@@ -23,9 +12,14 @@ module.exports = {
       // 2G deja margen de sobra para 2 workers concurrentes conservando la red de seguridad.
       max_memory_restart: '2G',
       env: {
-        MYSQL_DSN: process.env.MYSQL_DSN || '',
+        MYSQL_DSN: 'root:TU_CONTRASEÑA_AQUI@tcp(localhost:3306)/busk?parseTime=true&multiStatements=true',
         PROCESSOR_WORKERS: '2',
-        PROCESSOR_READ_FULL_FILE_ON_ROW_ERRORS: 'false',
+        // Seguir leyendo tras una fila inválida en vez de abortar el archivo entero.
+        PROCESSOR_READ_FULL_FILE_ON_ROW_ERRORS: 'true',
+        // Gate de archivo: con true se cargan las filas válidas y las problemáticas quedan
+        // en MANUAL_REVIEW (documentadas en el informe) en vez de descartar el archivo
+        // completo. Poner en false para volver al comportamiento histórico "todo o nada".
+        PROCESSOR_IMPORT_WITH_REVIEW_ROWS: 'true',
         FILES_ARCHIVE_DIR: './services/api/data/files-archive',
         REPORTS_ARCHIVE_DIR: './services/api/data/reports-archive',
         SFTP_HOST: '192.168.46.101',
@@ -36,6 +30,7 @@ module.exports = {
         SENDGRID_API_KEY: process.env.SENDGRID_API_KEY || '',
         SENDGRID_FROM_EMAIL: 'alertas@buskseguros.com',
         SENDGRID_ERROR_TO_EMAILS: 'desarrollador@buskseguros.com,joaquin.anaya@buskseguros.com,sara.rubiano@buskseguros.com',
+        API_PUBLIC_BASE_URL:'http://62.146.228.79'
       },
       error_file: './logs/error.log',
       out_file: './logs/out.log',
