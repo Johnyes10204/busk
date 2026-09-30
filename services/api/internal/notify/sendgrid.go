@@ -577,10 +577,9 @@ func (n *sendGridNotifier) composeErrorMail(input FileEmailInput, attachments []
 	adjuntoEspejo := adjunto && kind == errAttEspejo
 	adjuntoOriginal := adjunto && kind == errAttOriginal
 	reportTooLarge := kind == errAttEspejoOversized
-	bodyMentionsReport := kind == errAttEspejo || kind == errAttEspejoOversized
 
-	plainText := buildPlainBody(input, adjuntoEspejo, adjuntoOriginal, bodyMentionsReport, reportTooLarge, downloadURL)
-	htmlBody := buildHTMLBody(input, adjuntoEspejo, adjuntoOriginal, bodyMentionsReport, reportTooLarge, downloadURL)
+	plainText := buildPlainBody(input, adjuntoEspejo, adjuntoOriginal, reportTooLarge, downloadURL)
+	htmlBody := buildHTMLBody(input, adjuntoEspejo, adjuntoOriginal, reportTooLarge, downloadURL)
 	message.AddContent(sgmail.NewContent("text/plain", plainText))
 	message.AddContent(sgmail.NewContent("text/html", htmlBody))
 	return message
@@ -711,7 +710,7 @@ func etiquetaEstadoArchivo(status string) string {
 	}
 }
 
-func buildPlainBody(input FileEmailInput, adjuntoExcel, adjuntoOriginal, tieneInforme, reporteMuyGrande bool, downloadURL string) string {
+func buildPlainBody(input FileEmailInput, adjuntoExcel, adjuntoOriginal, reporteMuyGrande bool, downloadURL string) string {
 	d := buildReportEmailData(input, adjuntoExcel, adjuntoOriginal, reporteMuyGrande, downloadURL)
 	var b strings.Builder
 	b.WriteString("Busk Seguros — Informe de procesamiento de archivo\n")
@@ -738,35 +737,33 @@ func buildPlainBody(input FileEmailInput, adjuntoExcel, adjuntoOriginal, tieneIn
 		b.WriteString("Adjunto: Excel espejo del archivo original con las columnas OBSERVACIÓN y novedades por fila.\n\n")
 	case adjuntoOriginal:
 		b.WriteString("Adjunto: archivo original tal cual llegó del SFTP, para su revisión manual.\n\n")
-	case reporteMuyGrande:
-		b.WriteString("Aviso importante: el reporte de novedades supera el tamaño máximo permitido por el proveedor de correo (~28 MB), por eso este mensaje no lleva adjunto.\n")
-		b.WriteString("El reporte completo (espejo del archivo original con OBSERVACIÓN y novedades por fila) está disponible para descarga:\n")
-		if d.DescargaInformeURL != "" {
-			b.WriteString(d.DescargaInformeURL + "\n\n")
-		} else {
-			b.WriteString("Solicítelo al equipo técnico con file_id=" + strings.TrimSpace(input.FileID) + " (no está configurada la URL pública API_PUBLIC_BASE_URL).\n\n")
-		}
-	case tieneInforme && d.DescargaInformeURL != "":
-		b.WriteString("El adjunto no pudo enviarse. Descargue el informe Excel aquí:\n")
-		b.WriteString(d.DescargaInformeURL + "\n\n")
-	case tieneInforme:
-		b.WriteString("El adjunto no pudo enviarse. Solicite el Excel al equipo técnico con file_id=" + strings.TrimSpace(input.FileID) + ".\n\n")
 	default:
 		b.WriteString("Este mensaje no lleva adjunto. Revise el detalle del sistema arriba para el motivo del error.\n\n")
+	}
+	if reporteMuyGrande {
+		b.WriteString("Aviso importante: el reporte de novedades supera el tamaño máximo permitido por el proveedor de correo (~28 MB), por eso este mensaje no lleva adjunto.\n\n")
+	}
+	// El enlace de descarga se incluye en todos los correos, tenga o no adjunto: el
+	// operador siempre debe poder abrir el Excel con OBSERVACIÓN y novedades por fila.
+	b.WriteString("Descarga del Excel espejo con OBSERVACIÓN y novedades por fila:\n")
+	if d.DescargaInformeURL != "" {
+		b.WriteString(d.DescargaInformeURL + "\n\n")
+	} else {
+		b.WriteString("Solicítelo al equipo técnico con file_id=" + strings.TrimSpace(input.FileID) + " (no está configurada la URL pública API_PUBLIC_BASE_URL).\n\n")
 	}
 	b.WriteString("— Busk Seguros · Procesamiento automático de inclusiones\n")
 	return strings.TrimSpace(b.String())
 }
 
-func buildHTMLBody(input FileEmailInput, adjuntoExcel, adjuntoOriginal, tieneInforme, reporteMuyGrande bool, downloadURL string) string {
+func buildHTMLBody(input FileEmailInput, adjuntoExcel, adjuntoOriginal, reporteMuyGrande bool, downloadURL string) string {
 	data := buildReportEmailData(input, adjuntoExcel, adjuntoOriginal, reporteMuyGrande, downloadURL)
 	tpl, err := template.New("error-email").Parse(errorEmailTemplate)
 	if err != nil {
-		return strings.ReplaceAll(buildPlainBody(input, adjuntoExcel, adjuntoOriginal, tieneInforme, reporteMuyGrande, downloadURL), "\n", "<br>")
+		return strings.ReplaceAll(buildPlainBody(input, adjuntoExcel, adjuntoOriginal, reporteMuyGrande, downloadURL), "\n", "<br>")
 	}
 	var b bytes.Buffer
 	if err := tpl.Execute(&b, data); err != nil {
-		return strings.ReplaceAll(buildPlainBody(input, adjuntoExcel, adjuntoOriginal, tieneInforme, reporteMuyGrande, downloadURL), "\n", "<br>")
+		return strings.ReplaceAll(buildPlainBody(input, adjuntoExcel, adjuntoOriginal, reporteMuyGrande, downloadURL), "\n", "<br>")
 	}
 	return b.String()
 }
@@ -845,8 +842,13 @@ func buildSuccessPlainBody(input FileEmailInput, adjuntos bool, hasNovedades boo
 	b.WriteString("Procesado: " + processedAt + "\n\n")
 	if adjuntos {
 		b.WriteString("Adjunto: Excel espejo del archivo original con las columnas OBSERVACIÓN y novedades.\n\n")
-	} else if strings.TrimSpace(reportDownloadURL) != "" {
-		b.WriteString("Descargue el Excel espejo con OBSERVACIÓN y novedades:\n" + reportDownloadURL + "\n\n")
+	}
+	// El enlace de descarga se incluye en todos los correos de éxito, tenga o no adjunto.
+	b.WriteString("Descarga del Excel espejo con OBSERVACIÓN y novedades por fila:\n")
+	if url := strings.TrimSpace(reportDownloadURL); url != "" {
+		b.WriteString(url + "\n\n")
+	} else {
+		b.WriteString("Solicítelo al equipo técnico indicando el nombre del archivo (no está configurada la URL pública API_PUBLIC_BASE_URL).\n\n")
 	}
 	b.WriteString("— Busk Seguros · Procesamiento automático de inclusiones\n")
 	return strings.TrimSpace(b.String())
@@ -929,8 +931,6 @@ const errorEmailTemplate = `
                 <strong>Acción requerida:</strong> revise el archivo original adjunto (tal cual llegó del SFTP) y el detalle del sistema para identificar el motivo.
                 {{else if .ReporteMuyGrande}}
                 <strong>Acción requerida:</strong> descargue el reporte completo desde el enlace indicado más abajo. El adjunto no se incluye porque supera el tamaño máximo del proveedor de correo (~28 MB).
-                {{else if .DescargaInformeURL}}
-                <strong>Acción requerida:</strong> descargue el informe Excel desde el enlace indicado más abajo (el adjunto no pudo enviarse por tamaño).
                 {{else}}
                 <strong>Acción requerida:</strong> revise el detalle del sistema para identificar el motivo del error. Este mensaje no lleva adjunto.
                 {{end}}
@@ -973,25 +973,25 @@ const errorEmailTemplate = `
             </div>
             {{else if .ReporteMuyGrande}}
             <div style="background:#fff8e6;padding:16px;border-radius:6px;margin-bottom:8px;border-left:4px solid #e6a800;">
-              <p style="margin:0 0 8px;font-size:14px;line-height:1.5;color:#5c4a00;">
+              <p style="margin:0;font-size:14px;line-height:1.5;color:#5c4a00;">
                 <strong>Reporte demasiado grande para adjuntar.</strong> El espejo del archivo original excede el tamaño máximo permitido por el proveedor de correo (~28 MB), por eso este mensaje no lleva adjunto.
               </p>
-              {{if .DescargaInformeURL}}
-              <p style="margin:0;font-size:14px;line-height:1.5;color:#5c4a00;">
-                <strong>Descargar reporte completo:</strong>
-                <a href="{{.DescargaInformeURL}}" style="color:#5c4a00;">{{.DescargaInformeURL}}</a>
-              </p>
-              {{else}}
-              <p style="margin:0;font-size:14px;line-height:1.5;color:#5c4a00;">
-                Solicite el Excel al equipo técnico (no está configurada la URL pública <code>API_PUBLIC_BASE_URL</code>).
-              </p>
-              {{end}}
             </div>
-            {{else if .DescargaInformeURL}}
+            {{end}}
+
+            {{if .DescargaInformeURL}}
             <div style="background:#eef4fc;padding:16px;border-radius:6px;margin-bottom:8px;">
-              <p style="margin:0;font-size:14px;line-height:1.5;color:#0b3d91;">
-                <strong>Descargar informe Excel:</strong>
-                <a href="{{.DescargaInformeURL}}" style="color:#0b3d91;">{{.DescargaInformeURL}}</a>
+              <p style="margin:0 0 8px;font-size:14px;line-height:1.5;color:#0b3d91;">
+                <strong>Descargar informe Excel:</strong> espejo del archivo original con las columnas OBSERVACIÓN y novedades por fila.
+              </p>
+              <p style="margin:0;font-size:14px;line-height:1.5;color:#0b3d91;word-break:break-all;">
+                <a href="{{.DescargaInformeURL}}" style="color:#0b3d91;text-decoration:underline;">{{.DescargaInformeURL}}</a>
+              </p>
+            </div>
+            {{else}}
+            <div style="background:#f8f9fa;padding:16px;border-radius:6px;margin-bottom:8px;">
+              <p style="margin:0;font-size:13px;line-height:1.5;color:#555;">
+                Descargue el Excel con OBSERVACIÓN y novedades solicitándolo al equipo técnico con el <code>file_id</code> de este archivo (no está configurada la URL pública <code>API_PUBLIC_BASE_URL</code>).
               </p>
             </div>
             {{end}}
@@ -1044,11 +1044,21 @@ const successEmailTemplate = `
                 <strong>Adjunto:</strong> Excel espejo del archivo original con las columnas OBSERVACIÓN y novedades.
               </p>
             </div>
-            {{else if .DescargaInformeURL}}
+            {{end}}
+
+            {{if .DescargaInformeURL}}
             <div style="background:#eef9f1;padding:16px;border-radius:6px;margin-bottom:8px;">
-              <p style="margin:0;font-size:14px;line-height:1.5;color:#0d6b3a;">
-                <strong>Descargar Excel con OBSERVACIÓN y novedades:</strong>
-                <a href="{{.DescargaInformeURL}}" style="color:#0d6b3a;">{{.DescargaInformeURL}}</a>
+              <p style="margin:0 0 8px;font-size:14px;line-height:1.5;color:#0d6b3a;">
+                <strong>Descargar Excel con OBSERVACIÓN y novedades por fila:</strong> disponible siempre en el siguiente enlace.
+              </p>
+              <p style="margin:0;font-size:14px;line-height:1.5;color:#0d6b3a;word-break:break-all;">
+                <a href="{{.DescargaInformeURL}}" style="color:#0d6b3a;text-decoration:underline;">{{.DescargaInformeURL}}</a>
+              </p>
+            </div>
+            {{else}}
+            <div style="background:#f0f2f5;padding:16px;border-radius:6px;margin-bottom:8px;">
+              <p style="margin:0;font-size:13px;line-height:1.5;color:#555;">
+                Para obtener el Excel con OBSERVACIÓN y novedades por fila, solicítelo al equipo técnico indicando el nombre del archivo (no está configurada la URL pública <code>API_PUBLIC_BASE_URL</code>).
               </p>
             </div>
             {{end}}
